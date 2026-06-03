@@ -61,11 +61,25 @@ def is_url_available(url: str) -> bool:
 def get_oneapi_version() -> Version:
     """Get the oneapi version from
     """
-    assert SYCL_HOME is not None, "SYCL_HOME environment variable is not set."
-    icpx_output = subprocess.check_output([SYCL_HOME + "/bin/icpx", "-v"],
+    icpx = shutil.which("icpx")
+    cmplr_root = os.environ.get("CMPLR_ROOT")
+    if icpx is None and cmplr_root is not None:
+        candidate = os.path.join(cmplr_root, "bin", "icpx")
+        if os.path.exists(candidate):
+            icpx = candidate
+    if icpx is None and SYCL_HOME is not None:
+        candidate = os.path.join(SYCL_HOME, "bin", "icpx")
+        if os.path.exists(candidate):
+            icpx = candidate
+    if icpx is None:
+        raise RuntimeError(
+            "Could not find Intel oneAPI icpx compiler. Install the DPC++ "
+            "compiler and/or add icpx to PATH.")
+    icpx_output = subprocess.check_output([icpx, "-v"],
                                           universal_newlines=True)
     print("=============== icpx version ===============")
     print(f"sycl home: {SYCL_HOME}")
+    print(f"icpx: {icpx}")
     print(icpx_output)
     print("=============== icpx version ===============")
     # output = icpx_output.split()
@@ -239,6 +253,13 @@ class cmake_build_ext(build_ext):
         my_env = os.environ.copy()
         icx_path = shutil.which('icx')
         icpx_path = shutil.which('icpx')
+        cmplr_root = os.environ.get("CMPLR_ROOT")
+        if cmplr_root is not None:
+            icx_path = icx_path or os.path.join(cmplr_root, "bin", "icx")
+            icpx_path = icpx_path or os.path.join(cmplr_root, "bin", "icpx")
+        if SYCL_HOME is not None:
+            icx_path = icx_path or os.path.join(SYCL_HOME, "bin", "icx")
+            icpx_path = icpx_path or os.path.join(SYCL_HOME, "bin", "icpx")
         build_option_gpu = {
             "CMAKE_C_COMPILER": f"{icx_path}",
             "CMAKE_CXX_COMPILER": f"{icpx_path}",
