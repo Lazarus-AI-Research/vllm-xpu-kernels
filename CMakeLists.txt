@@ -44,7 +44,7 @@ set(SYCL_SUPPORTED_ARCHS "intel_gpu_pvc;intel_gpu_bmg_g21;intel_gpu_bmg_g31")
 #
 # TODO: we need to align torch version with used in vLLM.
 #
-set(TORCH_SUPPORTED_VERSION_XPU "2.12.0")
+set(TORCH_SUPPORTED_VERSION_XPU "2.13.0")
 
 set(BUILD_SYCL_TLA_KERNELS
     ON
@@ -213,9 +213,16 @@ include(FetchContent)
 file(MAKE_DIRECTORY ${FETCHCONTENT_BASE_DIR}) # Ensure the directory exists
 message(STATUS "FetchContent base directory: ${FETCHCONTENT_BASE_DIR}")
 
-# Set RPATH to $ORIGIN so that the extensions can find their shared libraries
-# when loaded by Python.
-set(CMAKE_INSTALL_RPATH "$ORIGIN")
+# Set RPATHs so the extensions can find package-local helper libraries, the
+# torch shared libraries, and oneAPI runtime wheels such as libsycl.so.9 when
+# loaded by Python from a virtual environment.
+set(VLLM_XPU_PACKAGE_RPATH
+    "$ORIGIN"
+    "$ORIGIN/../torch/lib"
+    "$ORIGIN/../../..")
+set(CMAKE_BUILD_RPATH "${VLLM_XPU_PACKAGE_RPATH}")
+set(CMAKE_INSTALL_RPATH "${VLLM_XPU_PACKAGE_RPATH}")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
 
@@ -441,6 +448,17 @@ list(APPEND VLLM_XPU_INCLUDE_DIR ${CMPLR_ROOT}/include/)
 list(APPEND VLLM_XPU_INCLUDE_DIR ${CMPLR_ROOT}/include/sycl/)
 list(APPEND VLLM_XPU_INCLUDE_DIR ${CMPLR_ROOT}/include/syclcompat/)
 message(STATUS "VLLM_XPU_INCLUDE_DIR: ${VLLM_XPU_INCLUDE_DIR}")
+
+set(VLLM_XPU_LIBRARY_DIR "")
+if(CMPLR_ROOT)
+  list(APPEND VLLM_XPU_LIBRARY_DIR ${CMPLR_ROOT}/lib)
+endif()
+if(DEFINED ENV{VIRTUAL_ENV})
+  list(APPEND VLLM_XPU_LIBRARY_DIR $ENV{VIRTUAL_ENV}/lib)
+endif()
+list(REMOVE_DUPLICATES VLLM_XPU_LIBRARY_DIR)
+message(STATUS "VLLM_XPU_LIBRARY_DIR: ${VLLM_XPU_LIBRARY_DIR}")
+link_directories(${VLLM_XPU_LIBRARY_DIR})
 
 set(VLLM_XPU_LINK_LIBRARIES "")
 list(
