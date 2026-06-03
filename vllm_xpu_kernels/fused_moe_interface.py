@@ -405,6 +405,8 @@ class XpuFusedMoe:
         topk_weights,
         topk_ids,
         expert_map=None,
+        workspace13=None,
+        workspace2=None,
     ):
         if self._use_ref:
             self._apply_ref(output, hidden_states,
@@ -413,7 +415,7 @@ class XpuFusedMoe:
         else:
             self._apply_kernel(output, hidden_states,
                                topk_weights, topk_ids,
-                               expert_map)
+                               expert_map, workspace13, workspace2)
 
     def _apply_ref(
         self,
@@ -447,6 +449,8 @@ class XpuFusedMoe:
         topk_weights,
         topk_ids,
         expert_map=None,
+        workspace13=None,
+        workspace2=None,
     ):
         num_rows, hidden_size = hidden_states.shape
         num_moe_inputs = self.n_experts_per_token * num_rows
@@ -454,10 +458,15 @@ class XpuFusedMoe:
         if expert_map is None and self.ep_size > 1:
             expert_map = self.expert_map
 
-        remapped_hidden_states = torch.empty(
-            (num_rows * self.n_experts_per_token, hidden_size),
-            dtype=hidden_states.dtype,
-            device=hidden_states.device)
+        if workspace13 is None:
+            remapped_hidden_states = torch.empty(
+                (num_moe_inputs, hidden_size),
+                dtype=hidden_states.dtype,
+                device=hidden_states.device)
+        else:
+            remapped_hidden_states = workspace13.view(-1)[:(
+                num_moe_inputs * hidden_size)].view(num_moe_inputs,
+                                                    hidden_size)
         rows_per_expert = torch.zeros((self.num_experts),
                                                 dtype=torch.int32,
                                                 device=hidden_states.device)
@@ -479,9 +488,15 @@ class XpuFusedMoe:
             local_experts_num=self.local_experts_num)
 
         ########### gemm1 ##################
-        gemm1_output = torch.empty((num_moe_inputs, 2 * self.inter_size),
-                                dtype=hidden_states.dtype,
-                                device=hidden_states.device)
+        gemm1_width = 2 * self.inter_size
+        if workspace2 is None:
+            gemm1_output = torch.empty((num_moe_inputs, gemm1_width),
+                                    dtype=hidden_states.dtype,
+                                    device=hidden_states.device)
+        else:
+            gemm1_output = workspace2.view(-1)[:(
+                num_moe_inputs * gemm1_width)].view(num_moe_inputs,
+                                                    gemm1_width)
         torch.ops._xpu_C.cutlass_grouped_gemm_interface(
             ptr_A=remapped_hidden_states,
             ptr_B=self.w13,
@@ -496,16 +511,27 @@ class XpuFusedMoe:
             is_B_mxfp4=self.is_mxfp4)
 
         # act
-        act_output = torch.empty(
-            (num_moe_inputs, self.inter_size * self.inter_size_scale),
-            dtype=gemm1_output.dtype,
-            device=gemm1_output.device)
+        act_width = self.inter_size * self.inter_size_scale
+        if workspace13 is None:
+            act_output = torch.empty(
+                (num_moe_inputs, act_width),
+                dtype=gemm1_output.dtype,
+                device=gemm1_output.device)
+        else:
+            act_output = workspace13.view(-1)[:(
+                num_moe_inputs * act_width)].view(num_moe_inputs,
+                                                  act_width)
         self.act_func(act_output, gemm1_output)
 
         ########### gemm2 ##################
-        gemm2_output = torch.empty((num_moe_inputs, hidden_size),
-                                dtype=hidden_states.dtype,
-                                device=hidden_states.device)
+        if workspace2 is None:
+            gemm2_output = torch.empty((num_moe_inputs, hidden_size),
+                                    dtype=hidden_states.dtype,
+                                    device=hidden_states.device)
+        else:
+            gemm2_output = workspace2.view(-1)[:(
+                num_moe_inputs * hidden_size)].view(num_moe_inputs,
+                                                    hidden_size)
 
         torch.ops._xpu_C.cutlass_grouped_gemm_interface(
             ptr_A=act_output,
