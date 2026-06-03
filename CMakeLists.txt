@@ -213,9 +213,13 @@ include(FetchContent)
 file(MAKE_DIRECTORY ${FETCHCONTENT_BASE_DIR}) # Ensure the directory exists
 message(STATUS "FetchContent base directory: ${FETCHCONTENT_BASE_DIR}")
 
-# Set RPATH to $ORIGIN so that the extensions can find their shared libraries
-# when loaded by Python.
-set(CMAKE_INSTALL_RPATH "$ORIGIN")
+# Set RPATHs so the extensions can find package-local helper libraries and
+# the torch shared libraries when loaded by Python.
+set(VLLM_XPU_PACKAGE_RPATH
+    "$ORIGIN"
+    "$ORIGIN/../torch/lib")
+set(CMAKE_BUILD_RPATH "${VLLM_XPU_PACKAGE_RPATH}")
+set(CMAKE_INSTALL_RPATH "${VLLM_XPU_PACKAGE_RPATH}")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
 
