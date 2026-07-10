@@ -84,6 +84,7 @@ void gdn_attention(
   TORCH_CHECK(dt_bias.is_contiguous(), "dt_bias must be contiguous");
 
   int non_spec_token = 0;
+  const int non_spec_batch_size = num_prefills + num_decodes;
   if (num_prefills + num_decodes > 0) {
     if (has_initial_state.has_value()) {
       TORCH_CHECK(
@@ -97,8 +98,8 @@ void gdn_attention(
           "has_initial_state must be 1D of shape [num_prefills + num_decodes]");
       TORCH_CHECK(
           num_prefills + num_decodes > 0 &&
-              has_initial_state->size(0) == num_prefills + num_decodes,
-          "has_initial_state must have size [num_prefills + num_decodes]");
+              has_initial_state->size(0) >= non_spec_batch_size,
+          "has_initial_state must have size at least [num_prefills + num_decodes]");
     }
 
     TORCH_CHECK(
@@ -112,9 +113,9 @@ void gdn_attention(
         "non_spec_query_start_loc must be 1D of shape [num_prefills + "
         "num_decodes + 1]");
     TORCH_CHECK(
-        non_spec_query_start_loc->size(0) == num_prefills + num_decodes + 1,
-        "non_spec_query_start_loc must have size [num_prefills + num_decodes + "
-        "1]");
+        non_spec_query_start_loc->size(0) >= non_spec_batch_size + 1,
+        "non_spec_query_start_loc must have size at least "
+        "[num_prefills + num_decodes + 1]");
 
     if (non_spec_token_indx.has_value()) {
       TORCH_CHECK(
@@ -142,10 +143,10 @@ void gdn_attention(
         "non_spec_state_indices_tensor must be 1D of shape [num_prefills + "
         "num_decodes]");
     TORCH_CHECK(
-        num_prefills + num_decodes > 0 && non_spec_state_indices_tensor->size(
-                                              0) == num_prefills + num_decodes,
-        "non_spec_state_indices_tensor must have size [num_prefills + "
-        "num_decodes, non_spec_token]");
+        num_prefills + num_decodes > 0 &&
+            non_spec_state_indices_tensor->size(0) >= non_spec_batch_size,
+        "non_spec_state_indices_tensor must have size at least [num_prefills + "
+        "num_decodes]");
   }
 
   int spec_token = 0;
@@ -275,6 +276,19 @@ void gdn_attention(
   const int pad_slot_id = -1;
 
   std::optional<torch::Tensor> empty_tensor{std::nullopt};
+  std::optional<torch::Tensor> non_spec_query_start_loc_active{std::nullopt};
+  std::optional<torch::Tensor> non_spec_state_indices_tensor_active{std::nullopt};
+  std::optional<torch::Tensor> has_initial_state_active{std::nullopt};
+  if (non_spec_token > 0) {
+    non_spec_query_start_loc_active =
+        non_spec_query_start_loc->narrow(0, 0, non_spec_batch_size + 1);
+    non_spec_state_indices_tensor_active =
+        non_spec_state_indices_tensor->narrow(0, 0, non_spec_batch_size);
+    if (has_initial_state.has_value()) {
+      has_initial_state_active =
+          has_initial_state->narrow(0, 0, non_spec_batch_size);
+    }
+  }
 
   if (spec_token > 0) {
     std::optional<torch::Tensor> spec_query_start_loc_active{
@@ -376,10 +390,10 @@ void gdn_attention(
         conv_weights,                                             \
         conv_bias,                                                \
         conv_state,                                               \
-        non_spec_query_start_loc,                                 \
+        non_spec_query_start_loc_active,                          \
         non_spec_token_indx,                                      \
-        non_spec_state_indices_tensor,                            \
-        has_initial_state,                                        \
+        non_spec_state_indices_tensor_active,                     \
+        has_initial_state_active,                                 \
         empty_tensor,                                             \
         act_mode,                                                 \
         pad_slot_id,                                              \
@@ -421,7 +435,7 @@ void gdn_attention(
         head_v_dim % gdn::chunk_size_xe2 == 0;
 
     if (num_prefills > 0 && supports_xe2_chunk_gdn) {
-      int batch_size = non_spec_query_start_loc->size(0) - 1;
+      int batch_size = non_spec_batch_size;
       int padding_size = batch_size * (gdn::chunk_size_xe2 - 1);
 
       const int* token_indx_ptr =
@@ -469,9 +483,9 @@ void gdn_attention(
             conv_weights,
             conv_bias,
             conv_state,
-            *non_spec_query_start_loc,
-            *non_spec_state_indices_tensor,
-            has_initial_state,
+            *non_spec_query_start_loc_active,
+            *non_spec_state_indices_tensor_active,
+            has_initial_state_active,
             act_mode,
             pad_slot_id,
             num_prefills,
@@ -494,9 +508,9 @@ void gdn_attention(
             conv_weights,
             conv_bias,
             conv_state,
-            *non_spec_query_start_loc,
-            *non_spec_state_indices_tensor,
-            has_initial_state,
+            *non_spec_query_start_loc_active,
+            *non_spec_state_indices_tensor_active,
+            has_initial_state_active,
             act_mode,
             pad_slot_id,
             num_prefills,
@@ -523,9 +537,9 @@ void gdn_attention(
           A_log,
           dt_bias,
           ssm_state,
-          *non_spec_query_start_loc,
-          *non_spec_state_indices_tensor,
-          has_initial_state,
+          *non_spec_query_start_loc_active,
+          *non_spec_state_indices_tensor_active,
+          has_initial_state_active,
           num_prefills,
           num_decodes,
           token_indx_ptr);

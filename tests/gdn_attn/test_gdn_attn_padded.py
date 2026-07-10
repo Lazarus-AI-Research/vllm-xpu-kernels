@@ -228,3 +228,106 @@ def test_gdn_attention_accepts_padded_leading_dim(num_actual_tokens,
     assert torch.all(z_tail == 0), (
         f"padded tail of z was written by the kernel: "
         f"max abs = {z_tail.abs().max().item():.3e}")
+
+
+@torch.inference_mode()
+def test_gdn_attention_accepts_padded_non_spec_metadata():
+    """Padded graph metadata should be ignored past active non-spec rows."""
+    device = "xpu"
+    random.seed(1)
+    torch.manual_seed(1)
+    dtype = torch.bfloat16
+    num_actual_tokens = 3
+
+    args = _build_inputs(num_actual_tokens, num_actual_tokens, dtype, device)
+    head_v = args.pop("head_v_dim_for_alloc")
+    nvh = args.pop("num_v_heads_for_alloc")
+
+    core_attn_out_exact = torch.zeros(num_actual_tokens, nvh, head_v,
+                                      dtype=dtype, device=device)
+    z_exact = torch.empty_like(core_attn_out_exact)
+    torch.ops._xpu_C.gdn_attention(
+        core_attn_out_exact,
+        z_exact,
+        args["projected_states_qkvz"].clone(),
+        args["projected_states_ba"].clone(),
+        args["num_k_heads"],
+        args["num_v_heads"],
+        args["head_k_dim"],
+        args["head_v_dim"],
+        conv_state=args["conv_state"].clone(),
+        ssm_state=args["ssm_state"].clone(),
+        conv_weights=args["conv_weights"],
+        conv_bias=args["conv_bias"],
+        activation=args["activation"],
+        A_log=args["A_log"],
+        dt_bias=args["dt_bias"],
+        num_prefills=args["num_prefills"],
+        num_decodes=args["num_decodes"],
+        num_spec_decodes=0,
+        has_initial_state=args["has_initial_state"],
+        non_spec_query_start_loc=args["non_spec_query_start_loc"],
+        non_spec_token_indx=None,
+        non_spec_state_indices_tensor=args["non_spec_state_indices_tensor"],
+        spec_query_start_loc=None,
+        spec_token_indx=None,
+        spec_state_indices_tensor=None,
+        num_accepted_tokens=None,
+        num_actual_tokens=args["num_actual_tokens"],
+        tp_size=args["tp_size"],
+        reorder_input=args["reorder_input"],
+    )
+
+    padded_rows = 5
+    query_start_loc = torch.empty(padded_rows + 1, dtype=torch.int32,
+                                  device=device)
+    query_start_loc[:num_actual_tokens + 1].copy_(
+        args["non_spec_query_start_loc"])
+    query_start_loc[num_actual_tokens + 1:].fill_(
+        args["non_spec_query_start_loc"][-1])
+    state_indices = torch.empty(padded_rows, dtype=torch.int32, device=device)
+    state_indices[:num_actual_tokens].copy_(
+        args["non_spec_state_indices_tensor"])
+    state_indices[num_actual_tokens:].fill_(-1)
+    has_initial_state = torch.empty(padded_rows, dtype=torch.bool,
+                                    device=device)
+    has_initial_state[:num_actual_tokens].copy_(args["has_initial_state"])
+    has_initial_state[num_actual_tokens:].fill_(False)
+
+    core_attn_out_padded = torch.zeros_like(core_attn_out_exact)
+    z_padded = torch.empty_like(core_attn_out_padded)
+    torch.ops._xpu_C.gdn_attention(
+        core_attn_out_padded,
+        z_padded,
+        args["projected_states_qkvz"].clone(),
+        args["projected_states_ba"].clone(),
+        args["num_k_heads"],
+        args["num_v_heads"],
+        args["head_k_dim"],
+        args["head_v_dim"],
+        conv_state=args["conv_state"].clone(),
+        ssm_state=args["ssm_state"].clone(),
+        conv_weights=args["conv_weights"],
+        conv_bias=args["conv_bias"],
+        activation=args["activation"],
+        A_log=args["A_log"],
+        dt_bias=args["dt_bias"],
+        num_prefills=args["num_prefills"],
+        num_decodes=args["num_decodes"],
+        num_spec_decodes=0,
+        has_initial_state=has_initial_state,
+        non_spec_query_start_loc=query_start_loc,
+        non_spec_token_indx=None,
+        non_spec_state_indices_tensor=state_indices,
+        spec_query_start_loc=None,
+        spec_token_indx=None,
+        spec_state_indices_tensor=None,
+        num_accepted_tokens=None,
+        num_actual_tokens=args["num_actual_tokens"],
+        tp_size=args["tp_size"],
+        reorder_input=args["reorder_input"],
+    )
+
+    torch.testing.assert_close(core_attn_out_padded, core_attn_out_exact,
+                               atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(z_padded, z_exact, atol=5e-2, rtol=5e-2)

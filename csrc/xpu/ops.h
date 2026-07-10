@@ -40,6 +40,61 @@ torch::Tensor fp4_gemm(
     std::optional<c10::ScalarType> out_dtype,
     const std::optional<torch::Tensor>& bias);
 
+torch::Tensor quixi_nvfp4_gemm(
+    const torch::Tensor& x,
+    const torch::Tensor& weight,
+    const torch::Tensor& block_scales,
+    double global_scale);
+
+torch::Tensor quixi_fp8_gemm_w8a16(
+    const torch::Tensor& x,
+    const torch::Tensor& weight,
+    const torch::Tensor& scale,
+    int64_t kind,
+    bool per_channel);
+
+torch::Tensor quixi_nvfp4_moe(
+    const torch::Tensor& hidden,
+    const torch::Tensor& topk_ids,
+    const torch::Tensor& topk_weights,
+    const torch::Tensor& w13,
+    const torch::Tensor& w13_scale,
+    const torch::Tensor& w13_global_scale,
+    const torch::Tensor& w2,
+    const torch::Tensor& w2_scale,
+    const torch::Tensor& w2_global_scale,
+    bool multiply_router_weight);
+
+torch::Tensor quixi_nvfp4_moe_split(
+    const torch::Tensor& hidden,
+    const torch::Tensor& topk_ids,
+    const torch::Tensor& topk_weights,
+    const torch::Tensor& w13,
+    const torch::Tensor& w13_scale,
+    const torch::Tensor& w13_global_scale,
+    const torch::Tensor& w2,
+    const torch::Tensor& w2_scale,
+    const torch::Tensor& w2_global_scale,
+    bool multiply_router_weight);
+
+std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
+    const torch::Tensor& projected_qkvz,
+    const torch::Tensor& projected_ba,
+    torch::Tensor& conv_state,
+    torch::Tensor& ssm_state,
+    const torch::Tensor& conv_weight,
+    const torch::Tensor& conv_bias,
+    const torch::Tensor& a_log,
+    const torch::Tensor& dt_bias,
+    const torch::Tensor& state_indices);
+
+void quixi_rms_norm(
+    torch::Tensor& output,
+    const torch::Tensor& x,
+    const torch::Tensor& weight,
+    double epsilon,
+    const std::optional<torch::Tensor>& residual);
+
 torch::Tensor int4_gemm_w4a16(
     const torch::Tensor& A_,
     const torch::Tensor& B,

@@ -8,6 +8,8 @@
 #include <torch/library.h>
 #include <torch/version.h>
 
+#include <string>
+
 TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, xpu_ops) {
   at::Tag stride_tag = at::Tag::needs_fixed_stride_order;
 
@@ -30,6 +32,41 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, xpu_ops) {
       "fp4_gemm(Tensor A, Tensor B, Tensor A_scale, Tensor B_scale, "
       "ScalarType? out_dtype, Tensor? bias_) -> Tensor");
   xpu_ops.impl("fp4_gemm", torch::kXPU, &fp4_gemm);
+
+  xpu_ops.def(
+      "quixi_nvfp4_gemm(Tensor x, Tensor weight, Tensor block_scales, "
+      "float global_scale) -> Tensor");
+  xpu_ops.impl("quixi_nvfp4_gemm", torch::kXPU, &quixi_nvfp4_gemm);
+
+  xpu_ops.def(
+      "quixi_fp8_gemm_w8a16(Tensor x, Tensor weight, Tensor scale, "
+      "int kind, bool per_channel) -> Tensor");
+  xpu_ops.impl(
+      "quixi_fp8_gemm_w8a16", torch::kXPU, &quixi_fp8_gemm_w8a16);
+
+  const std::string quixi_nvfp4_moe_schema =
+      "(Tensor hidden, Tensor topk_ids, Tensor topk_weights, Tensor w13, "
+      "Tensor w13_scale, Tensor w13_global_scale, Tensor w2, "
+      "Tensor w2_scale, Tensor w2_global_scale, "
+      "bool multiply_router_weight) -> Tensor";
+  xpu_ops.def(("quixi_nvfp4_moe" + quixi_nvfp4_moe_schema).c_str());
+  xpu_ops.impl("quixi_nvfp4_moe", torch::kXPU, &quixi_nvfp4_moe);
+  xpu_ops.def(("quixi_nvfp4_moe_split" + quixi_nvfp4_moe_schema).c_str());
+  xpu_ops.impl(
+      "quixi_nvfp4_moe_split", torch::kXPU, &quixi_nvfp4_moe_split);
+
+  xpu_ops.def(
+      "quixi_qwen_gdn_decode(Tensor projected_qkvz, Tensor projected_ba, "
+      "Tensor! conv_state, Tensor! ssm_state, Tensor conv_weight, "
+      "Tensor conv_bias, Tensor a_log, Tensor dt_bias, "
+      "Tensor state_indices) -> (Tensor, Tensor)");
+  xpu_ops.impl(
+      "quixi_qwen_gdn_decode", torch::kXPU, &quixi_qwen_gdn_decode);
+
+  xpu_ops.def(
+      "quixi_rms_norm(Tensor! output, Tensor x, Tensor weight, float epsilon, "
+      "Tensor!? residual) -> ()");
+  xpu_ops.impl("quixi_rms_norm", torch::kXPU, &quixi_rms_norm);
 
   xpu_ops.def(
       "int4_gemm_w4a16(Tensor A, Tensor B, Tensor? bias, Tensor B_scale, "

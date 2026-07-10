@@ -31,13 +31,30 @@ Kernels are written in SYCL/DPC++ and leverage [oneDNN](https://github.com/oneap
 |---|---|
 | **Normalization** | RMS norm, fused add-RMS norm, layer norm |
 | **Activation** | SiLU-and-mul, mul-and-SiLU, GeLU (fast/new/quick/tanh), SwigluOAI |
-| **Attention** | Flash attention (variable-length), GDN attention, XE2 attention variants |
+| **Attention** | Flash attention (variable-length), GDN attention, Qwen GDN decode, XE2 attention variants |
 | **Positional Encoding** | Rotary embedding (NeoX and GPT-J styles), DeepSeek scaling RoPE |
 | **Mixture of Experts** | TopK scoring (softmax/sigmoid), grouped TopK, fused grouped TopK; MoE align sum, MoE gather, expert remapping |
 | **LoRA** | LoRA operator support |
-| **Quantization** | FP8, MxFP4 quantization and GEMM |
+| **Quantization** | FP8, MxFP4, and NVFP4 quantization and GEMM |
 | **GEMM** | Grouped GEMM |
 | **Misc** | TopK per row, memory utilities |
+
+### Decode-oriented Quixi kernels
+
+The `_xpu_C` extension also includes low-batch SYCL kernels imported from the
+Quixi prototypes used during XPU decode optimization:
+
+| Operator | Purpose |
+|---|---|
+| `quixi_nvfp4_gemm` | ModelOpt-compatible NVFP4 W4A16 GEMV/GEMM |
+| `quixi_fp8_gemm_w8a16` | FP8 E4M3/E5M2 weight-only GEMV |
+| `quixi_nvfp4_moe` | Single-launch NVFP4 SwiGLU MoE decode |
+| `quixi_nvfp4_moe_split` | Two-launch, higher-occupancy NVFP4 MoE decode |
+| `quixi_qwen_gdn_decode` | Fixed-shape Qwen3.5/Qwen3.6 GDN decode core |
+| `quixi_rms_norm` | RMS norm with optional fused residual add |
+
+These paths target decode-sized batches. Existing oneDNN, grouped-GEMM, and
+general GDN operators remain available for unsupported shapes and prefill.
 
 ## Requirements
 
@@ -144,4 +161,6 @@ python benchmark/benchmark_grouped_topk.py
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0. See the
+[LICENSE](LICENSE) file for details. Vendored kernel sources under
+`csrc/xpu/quixi/` retain their MIT license and QuixiAI copyright notices.

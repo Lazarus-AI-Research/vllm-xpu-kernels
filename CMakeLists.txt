@@ -648,6 +648,7 @@ if(XPU_SPECIFIC_KERNELS_ENABLED)
       "csrc/xpu/sycl/deepseek_fused_indexer_q_rope_mxfp4.cpp"
       "csrc/xpu/sycl/multimodal_rope.cpp"
       "csrc/xpu/sycl/apply_rotary_emb.cpp"
+      "csrc/xpu/quixi/quixi_ops.cpp"
       "csrc/xpu/rand/exponential.cpp"
       "csrc/xpu/utils.cpp")
   if(MOE_KERNELS_ENABLED)
