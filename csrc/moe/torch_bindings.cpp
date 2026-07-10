@@ -53,15 +53,6 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
       "topk_group, int topk, bool renormalize, float "
       "routed_scaling_factor) -> (Tensor, Tensor)");
   m.impl("grouped_topk", torch::kXPU, &grouped_topk);
-
-  // Fused Grouped TopK
-  m.def(
-      "fused_grouped_topk(Tensor hidden_states, Tensor gating_output, int "
-      "n_topk, "
-      "bool renormalize, int n_expert_group, int n_topk_group, str "
-      "scoring_func, float routed_scaling_factor, Tensor? bias=None) -> "
-      "(Tensor, Tensor)");
-  m.impl("fused_grouped_topk", torch::kXPU, &fused_grouped_topk);
   // Apply topk softmax to the gating outputs.
   m.def(
       "topk_softmax(Tensor! topk_weights, Tensor! topk_indices, Tensor! "
@@ -71,9 +62,16 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
   // Apply topk sigmoid to the gating outputs.
   m.def(
       "topk_sigmoid(Tensor! topk_weights, Tensor! topk_indices, Tensor! "
-      "token_expert_indices, Tensor gating_output, bool renormalize, Tensor? "
-      "bias) -> ()");
+      "token_expert_indices, Tensor gating_output, bool renormalize, "
+      "Tensor? bias, float routed_scaling_factor) -> ()");
   m.impl("topk_sigmoid", torch::kXPU, &topk_sigmoid);
+  // Apply topk softplus sqrt to the gating outputs.
+  m.def(
+      "topk_softplus_sqrt(Tensor! topk_weights, Tensor! topk_indices, "
+      "Tensor! token_expert_indices, Tensor gating_output, bool renormalize, "
+      "float routed_scaling_factor, Tensor? correction_bias=None, Tensor? "
+      "input_ids=None, Tensor? tid2eid=None) -> ()");
+  m.impl("topk_softplus_sqrt", torch::kXPU, &topk_softplus_sqrt);
   // Apply topk softmax to the gating outputs.
   m.def(
       "moe_gather(Tensor! output, Tensor moe_output, Tensor topk_weights, "

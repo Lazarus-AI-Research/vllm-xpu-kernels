@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <torch/all.h>
 
 torch::Tensor weak_ref_tensor(torch::Tensor& tensor);
@@ -7,13 +8,13 @@ torch::Tensor weak_ref_tensor(torch::Tensor& tensor);
 void rms_norm(
     torch::Tensor& out,
     torch::Tensor& input,
-    torch::Tensor& weight,
+    std::optional<torch::Tensor> weight,
     double epsilon);
 
 void fused_add_rms_norm(
     torch::Tensor& input,
     torch::Tensor& residual,
-    torch::Tensor& weight,
+    std::optional<torch::Tensor> weight,
     double epsilon);
 
 // Fused RMSNorm + dynamic per-token quantization (FP8 or INT8 output).
@@ -36,7 +37,17 @@ void rms_norm_per_block_quant(
     std::optional<torch::Tensor> scale_ub,
     std::optional<torch::Tensor> residual,
     int64_t group_size,
-    bool is_scale_transposed);
+    bool is_scale_transposed,
+    bool scale_ue8m0);
+
+void rms_norm_mxfp4_quant(
+    torch::Tensor& out,
+    torch::Tensor const& input,
+    torch::Tensor const& weight,
+    torch::Tensor& scales,
+    double const epsilon,
+    std::optional<torch::Tensor> residual,
+    int64_t group_size);
 
 void rms_norm_static_fp8_quant(
     torch::Tensor& out,
@@ -64,7 +75,15 @@ void silu_and_mul_per_block_quant(
     torch::Tensor& scales,
     int64_t group_size,
     std::optional<torch::Tensor> scale_ub,
-    bool is_scale_transposed);
+    bool is_scale_transposed,
+    bool scale_ue8m0);
+
+void silu_and_mul_mxfp4_quant(
+    torch::Tensor& out,
+    torch::Tensor const& input,
+    torch::Tensor& scales,
+    int64_t group_size,
+    double eps);
 
 void mul_and_silu(torch::Tensor& out, torch::Tensor& input);
 
@@ -264,3 +283,5 @@ void merge_attn_states(
     const torch::Tensor& prefix_lse,
     const torch::Tensor& suffix_output,
     const torch::Tensor& suffix_lse);
+
+std::tuple<int64_t, int64_t> getMemoryInfo(int64_t device_index);

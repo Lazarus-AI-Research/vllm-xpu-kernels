@@ -8,6 +8,11 @@ import torch
 import tests.register_ops as ops
 
 
+def stable_topk(arr, k, dim=-1, largest=True):
+    values, indices = torch.sort(arr, dim=dim, descending=largest, stable=True)
+    return values.narrow(dim, 0, k), indices.narrow(dim, 0, k)
+
+
 def topk_softmax(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
@@ -20,10 +25,10 @@ def topk_softmax(
     routing_weights = torch.softmax(gating_output, dim=-1, dtype=torch.float32)
     if bias is not None:
         routing_weights_with_bias = routing_weights + bias.unsqueeze(0)
-        _, topk_ids = torch.topk(routing_weights_with_bias, topk, dim=-1)
+        _, topk_ids = stable_topk(routing_weights_with_bias, topk, dim=-1)
         topk_weights = routing_weights.gather(1, topk_ids)
     else:
-        topk_weights, topk_ids = torch.topk(routing_weights, topk, dim=-1)
+        topk_weights, topk_ids = stable_topk(routing_weights, topk, dim=-1)
 
     if renormalize:
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
@@ -37,18 +42,20 @@ def topk_sigmoid(
     renormalize: bool,
     bias: Optional[torch.Tensor] = None,
     indices_type: Optional[torch.dtype] = None,
+    routed_scaling_factor: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
 
     routing_weights = torch.sigmoid(gating_output).to(torch.float32)
     if bias is not None:
         routing_weights_with_bias = routing_weights + bias.unsqueeze(0)
-        _, topk_ids = torch.topk(routing_weights_with_bias, topk, dim=-1)
+        _, topk_ids = stable_topk(routing_weights_with_bias, topk, dim=-1)
         topk_weights = routing_weights.gather(1, topk_ids)
     else:
-        topk_weights, topk_ids = torch.topk(routing_weights, topk, dim=-1)
+        topk_weights, topk_ids = stable_topk(routing_weights, topk, dim=-1)
 
     if renormalize:
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    topk_weights = topk_weights * routed_scaling_factor
     return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
 
 
@@ -98,6 +105,7 @@ def fused_topk_sigmoid(
     renormalize: bool,
     bias: Optional[torch.Tensor] = None,
     indices_type: Optional[torch.dtype] = None,
+    routed_scaling_factor: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert hidden_states.size(0) == gating_output.size(0), (
         "Number of tokens mismatch")
@@ -125,6 +133,7 @@ def fused_topk_sigmoid(
         gating_output,
         renormalize,
         bias,
+        routed_scaling_factor,
     )
 
     return topk_weights, topk_ids
