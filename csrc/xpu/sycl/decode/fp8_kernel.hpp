@@ -9,7 +9,8 @@
 // uniform 2^8 factor, folded once into the per-output scale.
 //
 // Weight [N, K] fp8 (subgroup-per-output-row), per-channel scale[N] or a single
-// per-tensor scale. y[n] = scale[n] * sum_k fp8(w[n,k]) * x[k]. K multiple of 16.
+// per-tensor scale. y[n] = scale[n] * sum_k fp8(w[n,k]) * x[k]. K multiple
+// of 16.
 
 #pragma once
 
@@ -36,7 +37,8 @@ inline float fp8_dec(std::uint8_t b) {
     return static_cast<float>(
         sycl::bit_cast<sycl::half>(static_cast<std::uint16_t>(b << 8)));
   } else {
-    const auto h = static_cast<std::uint16_t>(((b & 0x80u) << 8) | ((b & 0x7Fu) << 7));
+    const auto h =
+        static_cast<std::uint16_t>(((b & 0x80u) << 8) | ((b & 0x7Fu) << 7));
     return static_cast<float>(sycl::bit_cast<sycl::half>(h));
   }
 }
@@ -46,14 +48,22 @@ class Fp8GemvKernel;
 
 // x[M,K] (T) @ dequant(W[N,K])^T -> y[M,N]. scale is [N] (per-channel) or [1].
 template <typename T, int KIND>
-sycl::event fp8_gemv_typed(sycl::queue& q, const T* x, const std::uint8_t* w,
-                           const float* scale, bool per_channel, T* y,
-                           std::size_t M, std::size_t N, std::size_t K) {
+sycl::event fp8_gemv_typed(
+    sycl::queue& q,
+    const T* x,
+    const std::uint8_t* w,
+    const float* scale,
+    bool per_channel,
+    T* y,
+    std::size_t M,
+    std::size_t N,
+    std::size_t K) {
   const std::size_t nchunks = K / 16;  // 16 fp8 per chunk
   const std::size_t nwg = (N + kRowsPerWG - 1) / kRowsPerWG;
   // e4m3 carries a uniform 2^8 per weight element; fold once here.
   const float kcomp = (KIND == 0) ? 256.0f : 1.0f;
-  const sycl::nd_range<2> ndr(sycl::range<2>(M, nwg * kWG), sycl::range<2>(1, kWG));
+  const sycl::nd_range<2> ndr(
+      sycl::range<2>(M, nwg * kWG), sycl::range<2>(1, kWG));
   return q.parallel_for<Fp8GemvKernel<T, KIND>>(
       ndr, [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(kSG)]] {
         const std::size_t m = it.get_global_id(0);
@@ -67,8 +77,10 @@ sycl::event fp8_gemv_typed(sycl::queue& q, const T* x, const std::uint8_t* w,
         float acc = 0.0f;
         for (std::size_t c = lane; c < nchunks; c += kSG) {
           const U8x16 wv = *reinterpret_cast<const U8x16*>(wrow + c * 16);
-          const sycl::vec<T, 8> x0 = *reinterpret_cast<const sycl::vec<T, 8>*>(xrow + c * 16);
-          const sycl::vec<T, 8> x1 = *reinterpret_cast<const sycl::vec<T, 8>*>(xrow + c * 16 + 8);
+          const sycl::vec<T, 8> x0 =
+              *reinterpret_cast<const sycl::vec<T, 8>*>(xrow + c * 16);
+          const sycl::vec<T, 8> x1 =
+              *reinterpret_cast<const sycl::vec<T, 8>*>(xrow + c * 16 + 8);
 #pragma unroll
           for (int i = 0; i < 8; ++i)
             acc += fp8_dec<KIND>(wv[i]) * static_cast<float>(x0[i]);
@@ -87,25 +99,52 @@ sycl::event fp8_gemv_typed(sycl::queue& q, const T* x, const std::uint8_t* w,
 }  // namespace fp8_detail
 
 // kind: 0=e4m3, 1=e5m2.
-inline sycl::event fp8_gemv_launch(sycl::queue& q, ActDType dt, int kind,
-                                   const void* x, const void* w, const void* scale,
-                                   bool per_channel, void* y, std::size_t M,
-                                   std::size_t N, std::size_t K) {
+inline sycl::event fp8_gemv_launch(
+    sycl::queue& q,
+    ActDType dt,
+    int kind,
+    const void* x,
+    const void* w,
+    const void* scale,
+    bool per_channel,
+    void* y,
+    std::size_t M,
+    std::size_t N,
+    std::size_t K) {
   using namespace fp8_detail;
   const auto* wu = static_cast<const std::uint8_t*>(w);
   const auto* sc = static_cast<const float*>(scale);
-#define DISPATCH(T)                                                              \
-  do {                                                                           \
-    if (kind == 1)                                                               \
-      return fp8_gemv_typed<T, 1>(q, static_cast<const T*>(x), wu, sc,           \
-                                  per_channel, static_cast<T*>(y), M, N, K);     \
-    return fp8_gemv_typed<T, 0>(q, static_cast<const T*>(x), wu, sc,             \
-                                per_channel, static_cast<T*>(y), M, N, K);       \
+#define DISPATCH(T)                 \
+  do {                              \
+    if (kind == 1)                  \
+      return fp8_gemv_typed<T, 1>(  \
+          q,                        \
+          static_cast<const T*>(x), \
+          wu,                       \
+          sc,                       \
+          per_channel,              \
+          static_cast<T*>(y),       \
+          M,                        \
+          N,                        \
+          K);                       \
+    return fp8_gemv_typed<T, 0>(    \
+        q,                          \
+        static_cast<const T*>(x),   \
+        wu,                         \
+        sc,                         \
+        per_channel,                \
+        static_cast<T*>(y),         \
+        M,                          \
+        N,                          \
+        K);                         \
   } while (0)
   switch (dt) {
-    case ActDType::bf16: DISPATCH(bf16_t);
-    case ActDType::f16: DISPATCH(half_t);
-    case ActDType::f32: DISPATCH(float);
+    case ActDType::bf16:
+      DISPATCH(bf16_t);
+    case ActDType::f16:
+      DISPATCH(half_t);
+    case ActDType::f32:
+      DISPATCH(float);
   }
 #undef DISPATCH
   return {};

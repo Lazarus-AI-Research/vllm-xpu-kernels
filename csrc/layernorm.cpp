@@ -10,8 +10,8 @@
 
 namespace {
 
-std::optional<vllm::xpu::decode::ActDType> decode_activation_dtype(
-    const torch::Tensor& tensor) {
+std::optional<vllm::xpu::decode::ActDType>
+decode_activation_dtype(const torch::Tensor& tensor) {
   switch (tensor.scalar_type()) {
     case torch::kFloat32:
       return vllm::xpu::decode::ActDType::f32;
@@ -36,8 +36,8 @@ bool launch_decode_rms_norm(
       (residual->is_contiguous() && residual->sizes() == input.sizes() &&
        residual->scalar_type() == input.scalar_type() &&
        residual->device() == input.device());
-  if (!dtype.has_value() || !input.is_contiguous() ||
-      !output.is_contiguous() || output.sizes() != input.sizes() ||
+  if (!dtype.has_value() || !input.is_contiguous() || !output.is_contiguous() ||
+      output.sizes() != input.sizes() ||
       output.scalar_type() != input.scalar_type() ||
       output.device() != input.device() || !weight.is_contiguous() ||
       weight.numel() != input.size(-1) ||
@@ -863,8 +863,7 @@ void fused_add_rms_norm(
   const bool has_weight = weight.has_value();
   if (has_weight) {
     TORCH_CHECK(weight->is_contiguous());
-    if (launch_decode_rms_norm(
-            input, input, *weight, &residual, epsilon)) {
+    if (launch_decode_rms_norm(input, input, *weight, &residual, epsilon)) {
       return;
     }
   }

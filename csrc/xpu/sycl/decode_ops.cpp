@@ -67,11 +67,11 @@ torch::Tensor nvfp4_gemm(
   check_xpu_contiguous(block_scales, "block_scales");
   check_same_device(x, weight, "weight");
   check_same_device(x, block_scales, "block_scales");
-  TORCH_CHECK(x.dim() >= 1 && x.size(-1) > 0, "x must have a non-empty K dimension");
+  TORCH_CHECK(
+      x.dim() >= 1 && x.size(-1) > 0, "x must have a non-empty K dimension");
   TORCH_CHECK(weight.dim() == 2, "weight must have shape [N, K / 2]");
   TORCH_CHECK(
-      block_scales.dim() == 2,
-      "block_scales must have shape [N, K / 16]");
+      block_scales.dim() == 2, "block_scales must have shape [N, K / 16]");
   TORCH_CHECK(weight.scalar_type() == torch::kUInt8, "weight must be uint8");
   TORCH_CHECK(
       block_scales.scalar_type() == torch::kFloat8_e4m3fn,
@@ -141,7 +141,8 @@ torch::Tensor fp8_gemv_w8a16(
   check_xpu_contiguous(scale, "scale");
   check_same_device(x, weight, "weight");
   check_same_device(x, scale, "scale");
-  TORCH_CHECK(x.dim() >= 1 && x.size(-1) > 0, "x must have a non-empty K dimension");
+  TORCH_CHECK(
+      x.dim() >= 1 && x.size(-1) > 0, "x must have a non-empty K dimension");
   TORCH_CHECK(weight.dim() == 2, "weight must have shape [N, K]");
   TORCH_CHECK(
       weight.scalar_type() == torch::kFloat8_e4m3fn ||
@@ -211,15 +212,15 @@ Nvfp4MoeShape check_nvfp4_moe_inputs(
   check_xpu_contiguous(w2, "w2");
   check_xpu_contiguous(w2_scale, "w2_scale");
   check_xpu_contiguous(w2_global_scale, "w2_global_scale");
-  for (const auto* tensor : {
-           &topk_ids,
-           &topk_weights,
-           &w13,
-           &w13_scale,
-           &w13_global_scale,
-           &w2,
-           &w2_scale,
-           &w2_global_scale}) {
+  for (const auto* tensor :
+       {&topk_ids,
+        &topk_weights,
+        &w13,
+        &w13_scale,
+        &w13_global_scale,
+        &w2,
+        &w2_scale,
+        &w2_global_scale}) {
     check_same_device(hidden, *tensor, "MoE input");
   }
 
@@ -232,7 +233,8 @@ Nvfp4MoeShape check_nvfp4_moe_inputs(
   TORCH_CHECK(w2.dim() == 3, "w2 must have shape [E, K, I / 2]");
   TORCH_CHECK(w13.scalar_type() == torch::kUInt8, "w13 must be uint8");
   TORCH_CHECK(w2.scalar_type() == torch::kUInt8, "w2 must be uint8");
-  TORCH_CHECK(topk_ids.scalar_type() == torch::kInt32, "topk_ids must be int32");
+  TORCH_CHECK(
+      topk_ids.scalar_type() == torch::kInt32, "topk_ids must be int32");
   TORCH_CHECK(
       topk_weights.scalar_type() == torch::kFloat32,
       "topk_weights must be float32");
@@ -255,11 +257,13 @@ Nvfp4MoeShape check_nvfp4_moe_inputs(
   TORCH_CHECK(
       experts > 0 || topk == 0,
       "at least one expert is required when topk is non-zero");
-  TORCH_CHECK(k % 32 == 0 && intermediate % 32 == 0, "K and I must be multiples of 32");
+  TORCH_CHECK(
+      k % 32 == 0 && intermediate % 32 == 0, "K and I must be multiples of 32");
   TORCH_CHECK(w13.size(1) % 2 == 0, "w13 output dimension must be even");
   TORCH_CHECK(w13.size(2) == k / 2, "w13 K / 2 dimension mismatch");
   TORCH_CHECK(
-      w13_scale.sizes() == torch::IntArrayRef({experts, 2 * intermediate, k / 16}),
+      w13_scale.sizes() ==
+          torch::IntArrayRef({experts, 2 * intermediate, k / 16}),
       "w13_scale must have shape [E, 2I, K / 16]");
   TORCH_CHECK(
       w2.sizes() == torch::IntArrayRef({experts, k, intermediate / 2}),
@@ -268,8 +272,7 @@ Nvfp4MoeShape check_nvfp4_moe_inputs(
       w2_scale.sizes() == torch::IntArrayRef({experts, k, intermediate / 16}),
       "w2_scale must have shape [E, K, I / 16]");
   TORCH_CHECK(
-      w13_global_scale.numel() == experts &&
-          w2_global_scale.numel() == experts,
+      w13_global_scale.numel() == experts && w2_global_scale.numel() == experts,
       "global scales must contain one value per expert");
   return {m, topk, experts, k, intermediate};
 }
@@ -426,7 +429,9 @@ std::tuple<torch::Tensor, torch::Tensor> qwen_gdn_decode(
   TORCH_CHECK(
       state_indices.dim() == 1 && state_indices.size(0) == batch,
       "state_indices must have shape [B]");
-  TORCH_CHECK(state_indices.scalar_type() == torch::kInt32, "state_indices must be int32");
+  TORCH_CHECK(
+      state_indices.scalar_type() == torch::kInt32,
+      "state_indices must be int32");
   TORCH_CHECK(a_log.scalar_type() == torch::kFloat32, "a_log must be float32");
   TORCH_CHECK(
       projected_ba.scalar_type() == projected_qkvz.scalar_type() &&
@@ -444,8 +449,7 @@ std::tuple<torch::Tensor, torch::Tensor> qwen_gdn_decode(
   const bool conv_dim_first =
       conv_state.size(1) == 8192 && conv_state.size(2) == 3;
   TORCH_CHECK(
-      conv_dim_first ||
-          (conv_state.size(1) == 3 && conv_state.size(2) == 8192),
+      conv_dim_first || (conv_state.size(1) == 3 && conv_state.size(2) == 8192),
       "conv_state must have shape [slots, 8192, 3] or [slots, 3, 8192]");
   TORCH_CHECK(
       conv_state.size(0) == ssm_state.size(0),
@@ -461,7 +465,8 @@ std::tuple<torch::Tensor, torch::Tensor> qwen_gdn_decode(
   if (batch == 0) {
     return {output, z};
   }
-  TORCH_CHECK(conv_state.size(0) > 0, "state tensors must contain at least one slot");
+  TORCH_CHECK(
+      conv_state.size(0) > 0, "state tensors must contain at least one slot");
   auto& queue = current_queue(projected_qkvz);
   vllm::xpu::decode::gdn_conv_launch(
       queue,

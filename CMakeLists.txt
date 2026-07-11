@@ -649,6 +649,14 @@ if(XPU_SPECIFIC_KERNELS_ENABLED)
       "csrc/xpu/xpu_graph.cpp"
       "csrc/xpu/rand/exponential.cpp"
       "csrc/xpu/utils.cpp")
+  set_property(
+    SOURCE "csrc/xpu/sycl/decode_ops.cpp"
+    APPEND
+    PROPERTY COMPILE_OPTIONS "-fsycl-id-queries-range=size_t")
+  set_property(
+    SOURCE "csrc/layernorm.cpp"
+    APPEND
+    PROPERTY COMPILE_OPTIONS "-fsycl-id-queries-range=size_t")
   if(MOE_KERNELS_ENABLED)
     list(APPEND VLLM_EXT_XPU_SRC
          "csrc/xpu/grouped_gemm/grouped_gemm_interface.cpp")

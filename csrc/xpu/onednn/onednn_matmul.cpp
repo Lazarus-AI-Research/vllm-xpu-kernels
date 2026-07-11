@@ -167,8 +167,8 @@ torch::Tensor fp8_gemm_w8a16(
       A.is_contiguous() && k % 16 == 0 && m <= decode_max_m;
   if (use_decode_gemv) {
     auto scale = B_scale_.has_value()
-        ? *B_scale_
-        : at::ones({1}, B.options().dtype(torch::kFloat32));
+                     ? *B_scale_
+                     : at::ones({1}, B.options().dtype(torch::kFloat32));
     auto result = fp8_gemv_w8a16(A, B.transpose(0, 1), scale);
     if (bias_.has_value() && bias_->numel() > 0) {
       result.add_(*bias_);
@@ -176,18 +176,14 @@ torch::Tensor fp8_gemm_w8a16(
     return result;
   }
 
-  torch::Tensor result =
-      check_and_create_output_tensor(A, B, A.scalar_type());
+  torch::Tensor result = check_and_create_output_tensor(A, B, A.scalar_type());
   // check if nt format
   bool is_nt = B.strides()[B.dim() - 2] == 1;
 
   torch::Tensor B_scale = B_scale_.has_value()
                               ? B_scale_.value()
-                              : at::ones(
-                                    {1},
-                                    B.options().dtype(A.dtype()));
-  oneDNN::dnnl_matmul_w8a16_fp8(
-      result, A, B, is_nt, bias_, B_scale);
+                              : at::ones({1}, B.options().dtype(A.dtype()));
+  oneDNN::dnnl_matmul_w8a16_fp8(result, A, B, is_nt, bias_, B_scale);
   return result;
 }
 
