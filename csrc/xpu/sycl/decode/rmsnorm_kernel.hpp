@@ -24,7 +24,7 @@
 
 #include "nvfp4_kernel.hpp"
 
-namespace quixi_nvfp4 {
+namespace vllm::xpu::decode {
 namespace rmsnorm_detail {
 
 template <typename T>
@@ -109,4 +109,4 @@ inline sycl::event rms_norm_launch(sycl::queue& q, ActDType dt, const void* x,
   return {};
 }
 
-}  // namespace quixi_nvfp4
+}  // namespace vllm::xpu::decode

@@ -1,37 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "xpu/quixi/fp8_kernel.hpp"
-#include "xpu/quixi/gdn_decode_kernel.hpp"
-#include "xpu/quixi/nvfp4_kernel.hpp"
-#include "xpu/quixi/nvfp4_moe_kernel.hpp"
-#include "xpu/quixi/rmsnorm_kernel.hpp"
+#include "xpu/sycl/decode/fp8_kernel.hpp"
+#include "xpu/sycl/decode/gdn_decode_kernel.hpp"
+#include "xpu/sycl/decode/nvfp4_kernel.hpp"
+#include "xpu/sycl/decode/nvfp4_moe_kernel.hpp"
 
 #include <c10/xpu/XPUStream.h>
 #include <torch/all.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <tuple>
 
 namespace {
 
-quixi_nvfp4::ActDType activation_dtype(const torch::Tensor& tensor) {
+vllm::xpu::decode::ActDType activation_dtype(const torch::Tensor& tensor) {
   switch (tensor.scalar_type()) {
     case torch::kFloat32:
-      return quixi_nvfp4::ActDType::f32;
+      return vllm::xpu::decode::ActDType::f32;
     case torch::kFloat16:
-      return quixi_nvfp4::ActDType::f16;
+      return vllm::xpu::decode::ActDType::f16;
     case torch::kBFloat16:
-      return quixi_nvfp4::ActDType::bf16;
+      return vllm::xpu::decode::ActDType::bf16;
     default:
       TORCH_CHECK(
           false,
-          "Quixi kernels support float32, float16, and bfloat16 activations; "
+          "Decode kernels support float32, float16, and bfloat16 activations; "
           "got ",
           tensor.scalar_type());
   }
-  return quixi_nvfp4::ActDType::f32;
+  return vllm::xpu::decode::ActDType::f32;
 }
 
 sycl::queue& current_queue(const torch::Tensor& tensor) {
@@ -58,7 +57,7 @@ void check_same_device(
 
 }  // namespace
 
-torch::Tensor quixi_nvfp4_gemm(
+torch::Tensor nvfp4_gemm(
     const torch::Tensor& x,
     const torch::Tensor& weight,
     const torch::Tensor& block_scales,
@@ -90,34 +89,53 @@ torch::Tensor quixi_nvfp4_gemm(
   auto output_sizes = x.sizes().vec();
   output_sizes.back() = n;
   auto output = torch::empty(output_sizes, x.options());
-
   const auto dtype = activation_dtype(x);
+  if (m == 0 || n == 0) {
+    return output;
+  }
+
   const int64_t element_size = x.element_size();
   auto* x_ptr = static_cast<char*>(x.data_ptr());
   auto* output_ptr = static_cast<char*>(output.data_ptr());
   const float scale = static_cast<float>(global_scale);
   auto& queue = current_queue(x);
-  for (int64_t row = 0; row < m; ++row) {
-    quixi_nvfp4::nvfp4_gemv_launch(
-        queue,
-        weight.data_ptr(),
-        block_scales.data_ptr(),
-        scale,
-        x_ptr + row * k * element_size,
-        output_ptr + row * n * element_size,
-        static_cast<std::size_t>(n),
-        static_cast<std::size_t>(k),
-        dtype);
+  constexpr int64_t kRowsPerLaunch = vllm::xpu::decode::detail::kMaxM;
+  for (int64_t row = 0; row < m; row += kRowsPerLaunch) {
+    const int64_t rows = std::min(kRowsPerLaunch, m - row);
+    const auto* input = x_ptr + row * k * element_size;
+    auto* result = output_ptr + row * n * element_size;
+    if (rows == 1) {
+      vllm::xpu::decode::nvfp4_gemv_launch(
+          queue,
+          weight.data_ptr(),
+          block_scales.data_ptr(),
+          scale,
+          input,
+          result,
+          static_cast<std::size_t>(n),
+          static_cast<std::size_t>(k),
+          dtype);
+    } else {
+      vllm::xpu::decode::nvfp4_gemm_mtiled_launch(
+          queue,
+          weight.data_ptr(),
+          block_scales.data_ptr(),
+          scale,
+          input,
+          result,
+          static_cast<std::size_t>(rows),
+          static_cast<std::size_t>(n),
+          static_cast<std::size_t>(k),
+          dtype);
+    }
   }
   return output;
 }
 
-torch::Tensor quixi_fp8_gemm_w8a16(
+torch::Tensor fp8_gemv_w8a16(
     const torch::Tensor& x,
     const torch::Tensor& weight,
-    const torch::Tensor& scale,
-    int64_t kind,
-    bool per_channel) {
+    const torch::Tensor& scale) {
   check_xpu_contiguous(x, "x");
   check_xpu_contiguous(weight, "weight");
   check_xpu_contiguous(scale, "scale");
@@ -125,27 +143,34 @@ torch::Tensor quixi_fp8_gemm_w8a16(
   check_same_device(x, scale, "scale");
   TORCH_CHECK(x.dim() >= 1 && x.size(-1) > 0, "x must have a non-empty K dimension");
   TORCH_CHECK(weight.dim() == 2, "weight must have shape [N, K]");
-  TORCH_CHECK(weight.scalar_type() == torch::kUInt8, "weight must be a uint8 view");
+  TORCH_CHECK(
+      weight.scalar_type() == torch::kFloat8_e4m3fn ||
+          weight.scalar_type() == torch::kFloat8_e5m2,
+      "weight must be float8_e4m3fn or float8_e5m2");
   TORCH_CHECK(scale.scalar_type() == torch::kFloat32, "scale must be float32");
-  TORCH_CHECK(kind == 0 || kind == 1, "kind must be 0 (e4m3) or 1 (e5m2)");
 
   const int64_t k = x.size(-1);
   const int64_t m = x.numel() / k;
   const int64_t n = weight.size(0);
+  const bool per_channel = scale.numel() == n;
+  const int kind = weight.scalar_type() == torch::kFloat8_e5m2 ? 1 : 0;
   TORCH_CHECK(k % 16 == 0, "K must be a multiple of 16");
   TORCH_CHECK(weight.size(1) == k, "weight K dimension mismatch");
   TORCH_CHECK(
-      scale.numel() == (per_channel ? n : 1),
-      per_channel ? "per-channel scale must contain N values"
-                  : "per-tensor scale must contain one value");
+      scale.numel() == 1 || per_channel,
+      "scale must contain one value or N per-channel values");
 
   auto output_sizes = x.sizes().vec();
   output_sizes.back() = n;
   auto output = torch::empty(output_sizes, x.options());
-  quixi_nvfp4::fp8_gemv_launch(
+  const auto dtype = activation_dtype(x);
+  if (m == 0 || n == 0) {
+    return output;
+  }
+  vllm::xpu::decode::fp8_gemv_launch(
       current_queue(x),
-      activation_dtype(x),
-      static_cast<int>(kind),
+      dtype,
+      kind,
       x.data_ptr(),
       weight.data_ptr(),
       scale.data_ptr(),
@@ -162,6 +187,7 @@ namespace {
 struct Nvfp4MoeShape {
   int64_t m;
   int64_t topk;
+  int64_t experts;
   int64_t hidden_size;
   int64_t intermediate_size;
 };
@@ -225,6 +251,10 @@ Nvfp4MoeShape check_nvfp4_moe_inputs(
   const int64_t experts = w13.size(0);
   const int64_t intermediate = w13.size(1) / 2;
   TORCH_CHECK(topk_ids.size(0) == m, "topk inputs must contain M rows");
+  TORCH_CHECK(k > 0 && intermediate > 0, "K and I must be non-zero");
+  TORCH_CHECK(
+      experts > 0 || topk == 0,
+      "at least one expert is required when topk is non-zero");
   TORCH_CHECK(k % 32 == 0 && intermediate % 32 == 0, "K and I must be multiples of 32");
   TORCH_CHECK(w13.size(1) % 2 == 0, "w13 output dimension must be even");
   TORCH_CHECK(w13.size(2) == k / 2, "w13 K / 2 dimension mismatch");
@@ -241,12 +271,12 @@ Nvfp4MoeShape check_nvfp4_moe_inputs(
       w13_global_scale.numel() == experts &&
           w2_global_scale.numel() == experts,
       "global scales must contain one value per expert");
-  return {m, topk, k, intermediate};
+  return {m, topk, experts, k, intermediate};
 }
 
 }  // namespace
 
-torch::Tensor quixi_nvfp4_moe(
+torch::Tensor nvfp4_moe(
     const torch::Tensor& hidden,
     const torch::Tensor& topk_ids,
     const torch::Tensor& topk_weights,
@@ -267,58 +297,69 @@ torch::Tensor quixi_nvfp4_moe(
       w2,
       w2_scale,
       w2_global_scale);
+  const auto dtype = activation_dtype(hidden);
   auto output = torch::zeros(
       {shape.m, shape.hidden_size}, hidden.options().dtype(torch::kFloat32));
-  quixi_nvfp4::nvfp4_moe_launch(
-      current_queue(hidden),
-      activation_dtype(hidden),
-      hidden.data_ptr(),
-      topk_ids.data_ptr(),
-      topk_weights.data_ptr(),
-      w13.data_ptr(),
-      w13_scale.data_ptr(),
-      w13_global_scale.data_ptr(),
-      w2.data_ptr(),
-      w2_scale.data_ptr(),
-      w2_global_scale.data_ptr(),
-      output.data_ptr(),
-      static_cast<std::size_t>(shape.m),
-      static_cast<std::size_t>(shape.topk),
-      static_cast<std::size_t>(shape.hidden_size),
-      static_cast<std::size_t>(shape.intermediate_size),
-      multiply_router_weight);
-  return output;
-}
+  if (shape.m == 0 || shape.topk == 0) {
+    return output;
+  }
 
-torch::Tensor quixi_nvfp4_moe_split(
-    const torch::Tensor& hidden,
-    const torch::Tensor& topk_ids,
-    const torch::Tensor& topk_weights,
-    const torch::Tensor& w13,
-    const torch::Tensor& w13_scale,
-    const torch::Tensor& w13_global_scale,
-    const torch::Tensor& w2,
-    const torch::Tensor& w2_scale,
-    const torch::Tensor& w2_global_scale,
-    bool multiply_router_weight) {
-  const auto shape = check_nvfp4_moe_inputs(
-      hidden,
-      topk_ids,
-      topk_weights,
-      w13,
-      w13_scale,
-      w13_global_scale,
-      w2,
-      w2_scale,
-      w2_global_scale);
-  auto output = torch::zeros(
-      {shape.m, shape.hidden_size}, hidden.options().dtype(torch::kFloat32));
+  auto& queue = current_queue(hidden);
+  const auto local_mem_size =
+      queue.get_device().get_info<sycl::info::device::local_mem_size>();
+  const auto intermediate_size =
+      static_cast<std::size_t>(shape.intermediate_size);
+  const auto fused_local_bytes = 3 * intermediate_size * sizeof(float);
+  const auto split_local_bytes = intermediate_size * sizeof(float);
+  const bool fused_supported = fused_local_bytes <= local_mem_size;
+  const bool split_supported = split_local_bytes <= local_mem_size;
+
+  // Measured on Arc Pro B60: split wins at decode M<=4, while fused wins once
+  // M*topk provides enough work-groups. Split is also the capacity fallback
+  // when the fused kernel exceeds local memory.
+  const bool select_split = shape.m <= 4 || !fused_supported;
+
+  if (!select_split) {
+    TORCH_CHECK(
+        fused_supported,
+        "NVFP4 fused MoE intermediate size requires ",
+        fused_local_bytes,
+        " bytes of local memory, but the device provides ",
+        local_mem_size);
+    vllm::xpu::decode::nvfp4_moe_launch(
+        queue,
+        dtype,
+        hidden.data_ptr(),
+        topk_ids.data_ptr(),
+        topk_weights.data_ptr(),
+        w13.data_ptr(),
+        w13_scale.data_ptr(),
+        w13_global_scale.data_ptr(),
+        w2.data_ptr(),
+        w2_scale.data_ptr(),
+        w2_global_scale.data_ptr(),
+        output.data_ptr(),
+        static_cast<std::size_t>(shape.m),
+        static_cast<std::size_t>(shape.topk),
+        static_cast<std::size_t>(shape.experts),
+        static_cast<std::size_t>(shape.hidden_size),
+        intermediate_size,
+        multiply_router_weight);
+    return output;
+  }
+
+  TORCH_CHECK(
+      split_supported,
+      "NVFP4 MoE intermediate size requires ",
+      split_local_bytes,
+      " bytes of local memory, but the device provides ",
+      local_mem_size);
   auto intermediate = torch::empty(
       {shape.m * shape.topk, 2 * shape.intermediate_size},
       hidden.options().dtype(torch::kFloat32));
-  quixi_nvfp4::nvfp4_moe_split_launch(
-      current_queue(hidden),
-      activation_dtype(hidden),
+  vllm::xpu::decode::nvfp4_moe_split_launch(
+      queue,
+      dtype,
       hidden.data_ptr(),
       topk_ids.data_ptr(),
       topk_weights.data_ptr(),
@@ -332,13 +373,14 @@ torch::Tensor quixi_nvfp4_moe_split(
       output.data_ptr(),
       static_cast<std::size_t>(shape.m),
       static_cast<std::size_t>(shape.topk),
+      static_cast<std::size_t>(shape.experts),
       static_cast<std::size_t>(shape.hidden_size),
-      static_cast<std::size_t>(shape.intermediate_size),
+      intermediate_size,
       multiply_router_weight);
   return output;
 }
 
-std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
+std::tuple<torch::Tensor, torch::Tensor> qwen_gdn_decode(
     const torch::Tensor& projected_qkvz,
     const torch::Tensor& projected_ba,
     torch::Tensor& conv_state,
@@ -366,10 +408,10 @@ std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
   check_same_device(projected_qkvz, dt_bias, "dt_bias");
   check_same_device(projected_qkvz, state_indices, "state_indices");
 
-  const int64_t batch = projected_qkvz.size(0);
   TORCH_CHECK(
       projected_qkvz.dim() == 2 && projected_qkvz.size(1) == 12288,
       "projected_qkvz must have shape [B, 12288]");
+  const int64_t batch = projected_qkvz.size(0);
   TORCH_CHECK(
       projected_ba.dim() == 2 && projected_ba.size(0) == batch &&
           projected_ba.size(1) == 64,
@@ -388,9 +430,11 @@ std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
   TORCH_CHECK(a_log.scalar_type() == torch::kFloat32, "a_log must be float32");
   TORCH_CHECK(
       projected_ba.scalar_type() == projected_qkvz.scalar_type() &&
+          conv_state.scalar_type() == projected_qkvz.scalar_type() &&
           conv_weight.scalar_type() == projected_qkvz.scalar_type() &&
           conv_bias.scalar_type() == projected_qkvz.scalar_type(),
-      "projected_ba, conv_weight, and conv_bias must match projected_qkvz dtype");
+      "projected_ba, conv_state, conv_weight, and conv_bias must match "
+      "projected_qkvz dtype");
   TORCH_CHECK(
       ssm_state.dim() == 4 && ssm_state.size(1) == 32 &&
           ssm_state.size(2) == 128 && ssm_state.size(3) == 128,
@@ -407,13 +451,21 @@ std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
       conv_state.size(0) == ssm_state.size(0),
       "conv_state and ssm_state slot counts must match");
 
+  const auto projected_dtype = activation_dtype(projected_qkvz);
+  const auto state_dtype = activation_dtype(ssm_state);
+  const auto dt_dtype = activation_dtype(dt_bias);
+
   auto mixed_qkv = torch::empty({batch, 8192}, projected_qkvz.options());
   auto z = torch::empty({batch, 32, 128}, projected_qkvz.options());
   auto output = torch::empty({batch, 32, 128}, projected_qkvz.options());
+  if (batch == 0) {
+    return {output, z};
+  }
+  TORCH_CHECK(conv_state.size(0) > 0, "state tensors must contain at least one slot");
   auto& queue = current_queue(projected_qkvz);
-  quixi_nvfp4::gdn_conv_launch(
+  vllm::xpu::decode::gdn_conv_launch(
       queue,
-      activation_dtype(projected_qkvz),
+      projected_dtype,
       projected_qkvz.data_ptr(),
       conv_weight.data_ptr(),
       conv_bias.data_ptr(),
@@ -424,11 +476,11 @@ std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
       z.data_ptr(),
       static_cast<std::size_t>(batch),
       static_cast<std::size_t>(conv_state.size(0)));
-  quixi_nvfp4::gdn_recur_launch(
+  vllm::xpu::decode::gdn_recur_launch(
       queue,
-      activation_dtype(projected_qkvz),
-      activation_dtype(ssm_state),
-      activation_dtype(dt_bias),
+      projected_dtype,
+      state_dtype,
+      dt_dtype,
       mixed_qkv.data_ptr(),
       projected_ba.data_ptr(),
       a_log.data_ptr(),
@@ -439,42 +491,4 @@ std::tuple<torch::Tensor, torch::Tensor> quixi_qwen_gdn_decode(
       static_cast<std::size_t>(batch),
       static_cast<std::size_t>(ssm_state.size(0)));
   return {output, z};
-}
-
-void quixi_rms_norm(
-    torch::Tensor& output,
-    const torch::Tensor& x,
-    const torch::Tensor& weight,
-    double epsilon,
-    const std::optional<torch::Tensor>& residual) {
-  check_xpu_contiguous(output, "output");
-  check_xpu_contiguous(x, "x");
-  check_xpu_contiguous(weight, "weight");
-  check_same_device(x, output, "output");
-  check_same_device(x, weight, "weight");
-  TORCH_CHECK(x.dim() >= 1 && x.size(-1) > 0, "x must have a non-empty hidden dimension");
-  TORCH_CHECK(output.sizes() == x.sizes(), "output must match x shape");
-  TORCH_CHECK(output.scalar_type() == x.scalar_type(), "output must match x dtype");
-  TORCH_CHECK(weight.numel() == x.size(-1), "weight must match the hidden dimension");
-  TORCH_CHECK(weight.scalar_type() == x.scalar_type(), "weight must match x dtype");
-
-  void* residual_ptr = nullptr;
-  if (residual.has_value()) {
-    check_xpu_contiguous(*residual, "residual");
-    check_same_device(x, *residual, "residual");
-    TORCH_CHECK(residual->sizes() == x.sizes(), "residual must match x shape");
-    TORCH_CHECK(residual->scalar_type() == x.scalar_type(), "residual must match x dtype");
-    residual_ptr = residual->data_ptr();
-  }
-
-  quixi_nvfp4::rms_norm_launch(
-      current_queue(x),
-      activation_dtype(x),
-      x.data_ptr(),
-      residual_ptr,
-      weight.data_ptr(),
-      output.data_ptr(),
-      static_cast<float>(epsilon),
-      static_cast<std::size_t>(x.numel() / x.size(-1)),
-      static_cast<std::size_t>(x.size(-1)));
 }

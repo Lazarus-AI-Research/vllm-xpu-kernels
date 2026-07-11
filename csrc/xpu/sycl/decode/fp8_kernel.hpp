@@ -20,7 +20,7 @@
 
 #include "nvfp4_kernel.hpp"  // ActDType, half_t, bf16_t
 
-namespace quixi_nvfp4 {  // reuse the extension namespace
+namespace vllm::xpu::decode {
 namespace fp8_detail {
 
 inline constexpr int kSG = 32;
@@ -111,4 +111,4 @@ inline sycl::event fp8_gemv_launch(sycl::queue& q, ActDType dt, int kind,
   return {};
 }
 
-}  // namespace quixi_nvfp4
+}  // namespace vllm::xpu::decode

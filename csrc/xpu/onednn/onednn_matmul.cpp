@@ -4,6 +4,7 @@
 #include "fp8_gemm_w8a16.h"
 #include "int4_gemm_w4a16.h"
 #include "int4_gemm_w4a8.h"
+#include "xpu/ops.h"
 
 inline bool is_supported_fp8(at::ScalarType t) {
   return (t == at::ScalarType::Float8_e5m2) ||
@@ -129,17 +130,64 @@ torch::Tensor fp8_gemm_w8a16(
     const std::optional<torch::Tensor>& B_scale_,
     const std::optional<torch::Tensor>& bias_) {
   const at::DeviceGuard device_guard(A.device());
-  torch::Tensor result = check_and_create_output_tensor(A, B, A.scalar_type());
   TORCH_CHECK(
       is_supported_fp8(B.scalar_type()),
       "weight must be f8_e5m2 or f8_e4m3fn for fp8 matmul");
+  TORCH_CHECK(
+      A.dim() == 2 || A.dim() == 3,
+      "FP8 W8A16 matmul only supports 2D and 3D inputs");
+
+  const int64_t k = A.size(-1);
+  TORCH_CHECK(k > 0, "FP8 W8A16 input K dimension must be non-zero");
+  const int64_t m = A.numel() / k;
+  const int64_t n = B.dim() == 2 ? B.size(1) : -1;
+  const bool has_per_output_decode_scale =
+      B_scale_.has_value() && B_scale_->numel() == n &&
+      (B_scale_->dim() == 1 ||
+       (B_scale_->dim() == 2 &&
+        (B_scale_->size(0) == 1 || B_scale_->size(1) == 1)));
+  const bool has_supported_decode_scale =
+      !B_scale_.has_value() ||
+      (B_scale_->is_contiguous() &&
+       B_scale_->scalar_type() == torch::kFloat32 &&
+       (B_scale_->numel() == 1 || has_per_output_decode_scale));
+  // The public op's weight is logically [K, N]. The decode kernel can consume
+  // it without a copy only when its transposed [N, K] view is contiguous.
+  // Keeping this layout test explicit also avoids guessing for square weights.
+  const bool has_decode_weight_layout =
+      B.dim() == 2 && B.size(0) == k && B.transpose(0, 1).is_contiguous();
+  const bool is_capturing =
+      c10::xpu::getCurrentXPUStream(A.device().index()).is_capturing();
+  // Direct B60 measurements select native only at M=1; oneDNN wins at M=2/4.
+  // During graph capture, use the graph-safe native route through M=4 rather
+  // than embedding the vendor primitive and its scratch lifecycle.
+  const int64_t decode_max_m = is_capturing ? 4 : 1;
+  const bool use_decode_gemv =
+      has_decode_weight_layout && has_supported_decode_scale &&
+      A.is_contiguous() && k % 16 == 0 && m <= decode_max_m;
+  if (use_decode_gemv) {
+    auto scale = B_scale_.has_value()
+        ? *B_scale_
+        : at::ones({1}, B.options().dtype(torch::kFloat32));
+    auto result = fp8_gemv_w8a16(A, B.transpose(0, 1), scale);
+    if (bias_.has_value() && bias_->numel() > 0) {
+      result.add_(*bias_);
+    }
+    return result;
+  }
+
+  torch::Tensor result =
+      check_and_create_output_tensor(A, B, A.scalar_type());
   // check if nt format
   bool is_nt = B.strides()[B.dim() - 2] == 1;
 
   torch::Tensor B_scale = B_scale_.has_value()
                               ? B_scale_.value()
-                              : at::ones({1}, B.options().dtype(A.dtype()));
-  oneDNN::dnnl_matmul_w8a16_fp8(result, A, B, is_nt, bias_, B_scale);
+                              : at::ones(
+                                    {1},
+                                    B.options().dtype(A.dtype()));
+  oneDNN::dnnl_matmul_w8a16_fp8(
+      result, A, B, is_nt, bias_, B_scale);
   return result;
 }
 

@@ -17,7 +17,7 @@
 
 #include "nvfp4_kernel.hpp"
 
-namespace quixi_nvfp4 {
+namespace vllm::xpu::decode {
 namespace gdn_detail {
 
 inline constexpr std::size_t kH = 16;
@@ -73,8 +73,12 @@ sycl::event gdn_conv_typed(sycl::queue& q, const T* projected_qkvz,
     if (idx >= B * kConvDim) return;
     const std::size_t b = idx / kConvDim;
     const std::size_t c = idx - b * kConvDim;
+    if (c >= kConvDim - kVDim) {
+      const std::size_t zc = c - (kConvDim - kVDim);
+      z_out[b * kVDim + zc] = projected_qkvz[b * kQKVZDim + kConvDim + zc];
+    }
     const std::int32_t state_idx = state_indices[b];
-    if (state_idx <= 0 || static_cast<std::size_t>(state_idx) >= nslots) {
+    if (state_idx < 0 || static_cast<std::size_t>(state_idx) >= nslots) {
       mixed_qkv[idx] = T(0);
       return;
     }
@@ -101,10 +105,6 @@ sycl::event gdn_conv_typed(sycl::queue& q, const T* projected_qkvz,
     acc += xf * to_f32(w[3]);
     mixed_qkv[idx] = from_f32<T>(silu(acc));
 
-    if (c >= kConvDim - kVDim) {
-      const std::size_t zc = c - (kConvDim - kVDim);
-      z_out[b * kVDim + zc] = projected_qkvz[b * kQKVZDim + kConvDim + zc];
-    }
   });
 }
 
@@ -128,7 +128,7 @@ sycl::event gdn_recur_typed(sycl::queue& q, const T* mixed_qkv,
         const std::size_t hv = nhv - b * kHV;
         const std::size_t h = hv / (kHV / kH);
         const std::int32_t state_idx = state_indices[b];
-        if (state_idx <= 0 || static_cast<std::size_t>(state_idx) >= nslots) {
+        if (state_idx < 0 || static_cast<std::size_t>(state_idx) >= nslots) {
           core_out[(b * kHV + hv) * kV + v] = T(0);
           return;
         }
@@ -272,4 +272,4 @@ inline sycl::event gdn_recur_launch(sycl::queue& q, ActDType dt,
   return {};
 }
 
-}  // namespace quixi_nvfp4
+}  // namespace vllm::xpu::decode

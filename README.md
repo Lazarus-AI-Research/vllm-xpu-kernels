@@ -39,22 +39,37 @@ Kernels are written in SYCL/DPC++ and leverage [oneDNN](https://github.com/oneap
 | **GEMM** | Grouped GEMM |
 | **Misc** | TopK per row, memory utilities |
 
-### Decode-oriented Quixi kernels
+### Decode-oriented SYCL kernels
 
 The `_xpu_C` extension also includes low-batch SYCL kernels imported from the
-Quixi prototypes used during XPU decode optimization:
+MIT-licensed prototypes used during XPU decode optimization:
 
 | Operator | Purpose |
 |---|---|
-| `quixi_nvfp4_gemm` | ModelOpt-compatible NVFP4 W4A16 GEMV/GEMM |
-| `quixi_fp8_gemm_w8a16` | FP8 E4M3/E5M2 weight-only GEMV |
-| `quixi_nvfp4_moe` | Single-launch NVFP4 SwiGLU MoE decode |
-| `quixi_nvfp4_moe_split` | Two-launch, higher-occupancy NVFP4 MoE decode |
-| `quixi_qwen_gdn_decode` | Fixed-shape Qwen3.5/Qwen3.6 GDN decode core |
-| `quixi_rms_norm` | RMS norm with optional fused residual add |
+| `nvfp4_gemm` | ModelOpt-compatible NVFP4 W4A16 GEMV/GEMM |
+| `fp8_gemm_w8a16` | Canonical FP8 W8A16 op with a low-batch GEMV fast path |
+| `nvfp4_moe` | NVFP4 SwiGLU MoE with measured automatic fused/split selection |
+| `qwen_gdn_decode` | Fixed-shape Qwen3.5/Qwen3.6 GDN decode core |
+| `rms_norm` / `fused_add_rms_norm` | Canonical RMSNorm ops with a contiguous-tensor fast path |
 
 These paths target decode-sized batches. Existing oneDNN, grouped-GEMM, and
 general GDN operators remain available for unsupported shapes and prefill.
+`qwen_gdn_decode` requires the documented fixed tensor shapes and unique active
+state indices in `[0, slots)`; any negative index is inactive. NVFP4 MoE
+routing indices must be negative for an unused route or fall in
+`[0, num_experts)`; invalid routes are ignored by the device kernel rather than
+dereferenced.
+
+`nvfp4_moe` selects the higher-occupancy split kernel for decode batches
+`M<=4`, the fused kernel for larger batches, and split as the local-memory
+capacity fallback.
+For FP8 W8A16, eager execution uses native GEMV only at `M=1`, matching B60
+measurements; current-stream graph capture extends the native, graph-safe route
+through `M=4`.
+
+The package also exposes `vllm_xpu_kernels.xpu_graph.XPUGraph`, a
+current-stream graph wrapper used by vLLM to avoid process-wide XPU queue
+synchronization during capture and replay.
 
 ## Requirements
 
@@ -163,4 +178,4 @@ python benchmark/benchmark_grouped_topk.py
 
 This project is licensed under the Apache License 2.0. See the
 [LICENSE](LICENSE) file for details. Vendored kernel sources under
-`csrc/xpu/quixi/` retain their MIT license and QuixiAI copyright notices.
+`csrc/xpu/sycl/decode/` retain their MIT license and QuixiAI copyright notices.

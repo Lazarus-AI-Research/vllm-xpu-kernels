@@ -27,7 +27,7 @@
 
 #include "nvfp4_kernel.hpp"
 
-namespace quixi_nvfp4 {
+namespace vllm::xpu::decode {
 namespace moe_detail {
 
 using detail::WVec;
@@ -85,7 +85,8 @@ sycl::event nvfp4_moe_typed(sycl::queue& q, const T* hidden,
                             const float* w13_gs, const std::uint8_t* w2,
                             const std::uint8_t* w2s, const float* w2_gs,
                             float* out_f32, std::size_t M, std::size_t Tk,
-                            std::size_t K, std::size_t I, bool mul_weight) {
+                            std::size_t E, std::size_t K, std::size_t I,
+                            bool mul_weight) {
   const std::size_t twoI = 2 * I;
   const std::size_t w13_estride = twoI * (K / 2);
   const std::size_t s13_estride = twoI * (K / 16);
@@ -103,7 +104,7 @@ sycl::event nvfp4_moe_typed(sycl::queue& q, const T* hidden,
           const std::size_t m = pid / Tk;
           const std::size_t t = pid % Tk;
           const std::int32_t e = topk_ids[m * Tk + t];
-          if (e < 0) return;
+          if (e < 0 || static_cast<std::size_t>(e) >= E) return;
           const float rw = mul_weight ? topk_w[m * Tk + t] : 1.0f;
 
           const sycl::sub_group sg = it.get_sub_group();
@@ -165,7 +166,7 @@ sycl::event nvfp4_moe_g_typed(sycl::queue& q, const T* hidden,
                               const std::int32_t* topk_ids, const std::uint8_t* w13,
                               const std::uint8_t* w13s, const float* w13_gs,
                               float* g_buf, std::size_t P, std::size_t Tk,
-                              std::size_t K, std::size_t I) {
+                              std::size_t E, std::size_t K, std::size_t I) {
   const std::size_t twoI = 2 * I;
   const std::size_t w13_estride = twoI * (K / 2);
   const std::size_t s13_estride = twoI * (K / 16);
@@ -175,7 +176,7 @@ sycl::event nvfp4_moe_g_typed(sycl::queue& q, const T* hidden,
       ndr, [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(kSG)]] {
         const std::size_t pid = it.get_global_id(0);
         const std::int32_t e = topk_ids[pid];
-        if (e < 0) return;
+        if (e < 0 || static_cast<std::size_t>(e) >= E) return;
         const std::size_t m = pid / Tk;
         const sycl::sub_group sg = it.get_sub_group();
         const int sgid = static_cast<int>(sg.get_group_linear_id());
@@ -195,8 +196,8 @@ sycl::event nvfp4_moe_o_typed(sycl::queue& q, const std::int32_t* topk_ids,
                               const float* topk_w, const std::uint8_t* w2,
                               const std::uint8_t* w2s, const float* w2_gs,
                               const float* g_buf, float* out_f32, std::size_t P,
-                              std::size_t Tk, std::size_t K, std::size_t I,
-                              bool mul_weight) {
+                              std::size_t Tk, std::size_t E, std::size_t K,
+                              std::size_t I, bool mul_weight) {
   const std::size_t twoI = 2 * I;
   const std::size_t w2_estride = K * (I / 2);
   const std::size_t s2_estride = K * (I / 16);
@@ -208,7 +209,7 @@ sycl::event nvfp4_moe_o_typed(sycl::queue& q, const std::int32_t* topk_ids,
         ndr, [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(kSG)]] {
           const std::size_t pid = it.get_global_id(0);
           const std::int32_t e = topk_ids[pid];
-          if (e < 0) return;
+          if (e < 0 || static_cast<std::size_t>(e) >= E) return;
           const std::size_t m = pid / Tk;
           const float rw = mul_weight ? topk_w[pid] : 1.0f;
           const sycl::sub_group sg = it.get_sub_group();
@@ -243,7 +244,8 @@ inline void nvfp4_moe_split_launch(
     sycl::queue& q, ActDType dt, const void* hidden, const void* topk_ids,
     const void* topk_w, const void* w13, const void* w13s, const void* w13_gs,
     const void* w2, const void* w2s, const void* w2_gs, void* g_buf, void* out_f32,
-    std::size_t M, std::size_t Tk, std::size_t K, std::size_t I, bool mul_weight) {
+    std::size_t M, std::size_t Tk, std::size_t E, std::size_t K,
+    std::size_t I, bool mul_weight) {
   using namespace moe_detail;
   const std::size_t P = M * Tk;
   const auto* ti = static_cast<const std::int32_t*>(topk_ids);
@@ -258,21 +260,23 @@ inline void nvfp4_moe_split_launch(
   auto* of = static_cast<float*>(out_f32);
 #define MOE_G(TY)                                                              \
   nvfp4_moe_g_typed(q, static_cast<const TY*>(hidden), ti, w13u, s13u, g13, gb, \
-                    P, Tk, K, I)
+                    P, Tk, E, K, I)
   switch (dt) {
     case ActDType::bf16: MOE_G(bf16_t); break;
     case ActDType::f16: MOE_G(half_t); break;
     case ActDType::f32: MOE_G(float); break;
   }
 #undef MOE_G
-  nvfp4_moe_o_typed<bf16_t>(q, ti, tw, w2u, s2u, g2, gb, of, P, Tk, K, I, mul_weight);
+  nvfp4_moe_o_typed<bf16_t>(
+      q, ti, tw, w2u, s2u, g2, gb, of, P, Tk, E, K, I, mul_weight);
 }
 
 inline sycl::event nvfp4_moe_launch(
     sycl::queue& q, ActDType dt, const void* hidden, const void* topk_ids,
     const void* topk_w, const void* w13, const void* w13s, const void* w13_gs,
     const void* w2, const void* w2s, const void* w2_gs, void* out_f32,
-    std::size_t M, std::size_t Tk, std::size_t K, std::size_t I, bool mul_weight) {
+    std::size_t M, std::size_t Tk, std::size_t E, std::size_t K,
+    std::size_t I, bool mul_weight) {
   using namespace moe_detail;
   const auto* ti = static_cast<const std::int32_t*>(topk_ids);
   const auto* tw = static_cast<const float*>(topk_w);
@@ -286,15 +290,18 @@ inline sycl::event nvfp4_moe_launch(
   switch (dt) {
     case ActDType::bf16:
       return nvfp4_moe_typed(q, static_cast<const bf16_t*>(hidden), ti, tw, w13u,
-                             s13u, g13, w2u, s2u, g2, of, M, Tk, K, I, mul_weight);
+                             s13u, g13, w2u, s2u, g2, of, M, Tk, E, K, I,
+                             mul_weight);
     case ActDType::f16:
       return nvfp4_moe_typed(q, static_cast<const half_t*>(hidden), ti, tw, w13u,
-                             s13u, g13, w2u, s2u, g2, of, M, Tk, K, I, mul_weight);
+                             s13u, g13, w2u, s2u, g2, of, M, Tk, E, K, I,
+                             mul_weight);
     case ActDType::f32:
       return nvfp4_moe_typed(q, static_cast<const float*>(hidden), ti, tw, w13u,
-                             s13u, g13, w2u, s2u, g2, of, M, Tk, K, I, mul_weight);
+                             s13u, g13, w2u, s2u, g2, of, M, Tk, E, K, I,
+                             mul_weight);
   }
   return {};
 }
 
-}  // namespace quixi_nvfp4
+}  // namespace vllm::xpu::decode

@@ -25,7 +25,7 @@
 
 #include <sycl/sycl.hpp>
 
-namespace quixi_nvfp4 {
+namespace vllm::xpu::decode {
 
 using half_t = sycl::half;
 using bf16_t = sycl::ext::oneapi::bfloat16;
@@ -222,4 +222,4 @@ inline sycl::event nvfp4_gemv_launch(sycl::queue& q, const void* w_packed,
   return {};
 }
 
-}  // namespace quixi_nvfp4
+}  // namespace vllm::xpu::decode

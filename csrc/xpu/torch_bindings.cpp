@@ -1,5 +1,6 @@
 #include "core/registration.h"
 #include "xpu/ops.h"
+#include "xpu/xpu_graph.h"
 #ifdef VLLM_MOE_ENABLED
   #include "xpu/grouped_gemm/grouped_gemm_interface.h"
 #endif
@@ -8,10 +9,23 @@
 #include <torch/library.h>
 #include <torch/version.h>
 
-#include <string>
-
 TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, xpu_ops) {
   at::Tag stride_tag = at::Tag::needs_fixed_stride_order;
+
+  xpu_ops.class_<VllmXpuGraph>("XPUGraph")
+      .def(torch::init<bool>())
+      .def("capture_begin", &VllmXpuGraph::capture_begin)
+      .def("capture_end", &VllmXpuGraph::capture_end)
+      .def("instantiate", &VllmXpuGraph::instantiate)
+      .def("replay", &VllmXpuGraph::replay)
+      .def("reset", &VllmXpuGraph::reset)
+      .def("pool", &VllmXpuGraph::pool)
+      .def("synchronize", &VllmXpuGraph::synchronize)
+      .def("enable_debug_mode", &VllmXpuGraph::enable_debug_mode)
+      .def("debug_dump", &VllmXpuGraph::debug_dump);
+
+  xpu_ops.def("synchronize_current_stream() -> ()");
+  xpu_ops.impl("synchronize_current_stream", &synchronize_current_stream);
 
   xpu_ops.def(
       "fp8_gemm(Tensor A, Tensor B, ScalarType? out_dtype, Tensor? A_scale_, "
@@ -34,39 +48,24 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, xpu_ops) {
   xpu_ops.impl("fp4_gemm", torch::kXPU, &fp4_gemm);
 
   xpu_ops.def(
-      "quixi_nvfp4_gemm(Tensor x, Tensor weight, Tensor block_scales, "
+      "nvfp4_gemm(Tensor x, Tensor weight, Tensor block_scales, "
       "float global_scale) -> Tensor");
-  xpu_ops.impl("quixi_nvfp4_gemm", torch::kXPU, &quixi_nvfp4_gemm);
+  xpu_ops.impl("nvfp4_gemm", torch::kXPU, &nvfp4_gemm);
 
   xpu_ops.def(
-      "quixi_fp8_gemm_w8a16(Tensor x, Tensor weight, Tensor scale, "
-      "int kind, bool per_channel) -> Tensor");
-  xpu_ops.impl(
-      "quixi_fp8_gemm_w8a16", torch::kXPU, &quixi_fp8_gemm_w8a16);
-
-  const std::string quixi_nvfp4_moe_schema =
-      "(Tensor hidden, Tensor topk_ids, Tensor topk_weights, Tensor w13, "
+      "nvfp4_moe(Tensor hidden, Tensor topk_ids, Tensor topk_weights, "
+      "Tensor w13, "
       "Tensor w13_scale, Tensor w13_global_scale, Tensor w2, "
       "Tensor w2_scale, Tensor w2_global_scale, "
-      "bool multiply_router_weight) -> Tensor";
-  xpu_ops.def(("quixi_nvfp4_moe" + quixi_nvfp4_moe_schema).c_str());
-  xpu_ops.impl("quixi_nvfp4_moe", torch::kXPU, &quixi_nvfp4_moe);
-  xpu_ops.def(("quixi_nvfp4_moe_split" + quixi_nvfp4_moe_schema).c_str());
-  xpu_ops.impl(
-      "quixi_nvfp4_moe_split", torch::kXPU, &quixi_nvfp4_moe_split);
+      "bool multiply_router_weight) -> Tensor");
+  xpu_ops.impl("nvfp4_moe", torch::kXPU, &nvfp4_moe);
 
   xpu_ops.def(
-      "quixi_qwen_gdn_decode(Tensor projected_qkvz, Tensor projected_ba, "
+      "qwen_gdn_decode(Tensor projected_qkvz, Tensor projected_ba, "
       "Tensor! conv_state, Tensor! ssm_state, Tensor conv_weight, "
       "Tensor conv_bias, Tensor a_log, Tensor dt_bias, "
       "Tensor state_indices) -> (Tensor, Tensor)");
-  xpu_ops.impl(
-      "quixi_qwen_gdn_decode", torch::kXPU, &quixi_qwen_gdn_decode);
-
-  xpu_ops.def(
-      "quixi_rms_norm(Tensor! output, Tensor x, Tensor weight, float epsilon, "
-      "Tensor!? residual) -> ()");
-  xpu_ops.impl("quixi_rms_norm", torch::kXPU, &quixi_rms_norm);
+  xpu_ops.impl("qwen_gdn_decode", torch::kXPU, &qwen_gdn_decode);
 
   xpu_ops.def(
       "int4_gemm_w4a16(Tensor A, Tensor B, Tensor? bias, Tensor B_scale, "

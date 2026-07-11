@@ -230,10 +230,7 @@ message(STATUS "FetchContent base directory: ${FETCHCONTENT_BASE_DIR}")
 # Set RPATHs so the extensions can find package-local helper libraries, the
 # torch shared libraries, and oneAPI runtime wheels such as libsycl.so.9 when
 # loaded by Python from a virtual environment.
-set(VLLM_XPU_PACKAGE_RPATH
-    "$ORIGIN"
-    "$ORIGIN/../torch/lib"
-    "$ORIGIN/../../..")
+set(VLLM_XPU_PACKAGE_RPATH "$ORIGIN" "$ORIGIN/../torch/lib" "$ORIGIN/../../..")
 set(CMAKE_BUILD_RPATH "${VLLM_XPU_PACKAGE_RPATH}")
 set(CMAKE_INSTALL_RPATH "${VLLM_XPU_PACKAGE_RPATH}")
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -648,7 +645,8 @@ if(XPU_SPECIFIC_KERNELS_ENABLED)
       "csrc/xpu/sycl/deepseek_fused_indexer_q_rope_mxfp4.cpp"
       "csrc/xpu/sycl/multimodal_rope.cpp"
       "csrc/xpu/sycl/apply_rotary_emb.cpp"
-      "csrc/xpu/quixi/quixi_ops.cpp"
+      "csrc/xpu/sycl/decode_ops.cpp"
+      "csrc/xpu/xpu_graph.cpp"
       "csrc/xpu/rand/exponential.cpp"
       "csrc/xpu/utils.cpp")
   if(MOE_KERNELS_ENABLED)

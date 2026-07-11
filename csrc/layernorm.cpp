@@ -6,6 +6,66 @@
 #include "utils.h"
 #include "dispatch_utils.h"
 #include "quantization/utils.h"
+#include "xpu/sycl/decode/rmsnorm_kernel.hpp"
+
+namespace {
+
+std::optional<vllm::xpu::decode::ActDType> decode_activation_dtype(
+    const torch::Tensor& tensor) {
+  switch (tensor.scalar_type()) {
+    case torch::kFloat32:
+      return vllm::xpu::decode::ActDType::f32;
+    case torch::kFloat16:
+      return vllm::xpu::decode::ActDType::f16;
+    case torch::kBFloat16:
+      return vllm::xpu::decode::ActDType::bf16;
+    default:
+      return std::nullopt;
+  }
+}
+
+bool launch_decode_rms_norm(
+    torch::Tensor& output,
+    const torch::Tensor& input,
+    const torch::Tensor& weight,
+    torch::Tensor* residual,
+    double epsilon) {
+  const auto dtype = decode_activation_dtype(input);
+  const bool residual_matches =
+      residual == nullptr ||
+      (residual->is_contiguous() && residual->sizes() == input.sizes() &&
+       residual->scalar_type() == input.scalar_type() &&
+       residual->device() == input.device());
+  if (!dtype.has_value() || !input.is_contiguous() ||
+      !output.is_contiguous() || output.sizes() != input.sizes() ||
+      output.scalar_type() != input.scalar_type() ||
+      output.device() != input.device() || !weight.is_contiguous() ||
+      weight.numel() != input.size(-1) ||
+      weight.scalar_type() != input.scalar_type() ||
+      weight.device() != input.device() || !residual_matches) {
+    return false;
+  }
+
+  const auto hidden_size = input.size(-1);
+  TORCH_CHECK(hidden_size > 0, "RMSNorm hidden size must be non-zero");
+  const auto rows = input.numel() / hidden_size;
+  if (rows == 0) {
+    return true;
+  }
+  vllm::xpu::decode::rms_norm_launch(
+      vllm::xpu::vllmGetQueue(),
+      *dtype,
+      input.data_ptr(),
+      residual == nullptr ? nullptr : residual->data_ptr(),
+      weight.data_ptr(),
+      output.data_ptr(),
+      static_cast<float>(epsilon),
+      static_cast<std::size_t>(rows),
+      static_cast<std::size_t>(hidden_size));
+  return true;
+}
+
+}  // namespace
 
 namespace vllm {
 
@@ -776,6 +836,9 @@ void rms_norm(
   const bool has_weight = weight.has_value();
   if (has_weight) {
     TORCH_CHECK(weight->is_contiguous());
+    if (launch_decode_rms_norm(out, input, *weight, nullptr, epsilon)) {
+      return;
+    }
   }
   VLLM_DISPATCH_FLOATING_TYPES(
       input.scalar_type(), "call_rms_norm_kernel", [&] {
@@ -800,6 +863,10 @@ void fused_add_rms_norm(
   const bool has_weight = weight.has_value();
   if (has_weight) {
     TORCH_CHECK(weight->is_contiguous());
+    if (launch_decode_rms_norm(
+            input, input, *weight, &residual, epsilon)) {
+      return;
+    }
   }
 
   VLLM_DISPATCH_FLOATING_TYPES(
