@@ -90,25 +90,27 @@ sycl::event nvfp4_gemv_typed(
         const std::uint8_t* srow = bscale + n * blocks_per_row;
 
         float acc = 0.0f;
-        // Stride over uint32 words (8 fp4) not 32-fp4 chunks, so all 32 lanes
-        // stay active for K>=256 (shared_expert.down_proj is K=256 -> 8 chunks
-        // -> lanes 8..31 would otherwise idle). Bit-identical per word.
-        const std::size_t nwords = nchunks * 4;
-        for (std::size_t widx = lane; widx < nwords; widx += kSG) {
-          const std::size_t c = widx >> 2;
-          const int wi = static_cast<int>(widx & 3);
-          const std::uint32_t word = wvrow[c][wi];
-          const float s = e4m3_dec_raw(srow[2 * c + (wi >> 1)]) * gscale;
-          const sycl::vec<T, 8> xv =
-              *reinterpret_cast<const sycl::vec<T, 8>*>(x + c * 32 + wi * 8);
-          float a0 = 0.0f, a1 = 0.0f;
+        for (std::size_t c = lane; c < nchunks; c += kSG) {
+          const WVec chunk = wvrow[c];
+          const float s0 = e4m3_dec_raw(srow[2 * c]) * gscale;
+          const float s1 = e4m3_dec_raw(srow[2 * c + 1]) * gscale;
+          const T* xc = x + c * 32;
+          float aw[4];
 #pragma unroll
-          for (int p = 0; p < 4; ++p) {  // pair p decodes nibbles p and p+4
-            const sycl::vec<float, 2> v = e2m1_dec2(word >> (4 * p));
-            a0 += v[0] * static_cast<float>(xv[p]);
-            a1 += v[1] * static_cast<float>(xv[p + 4]);
+          for (int wi = 0; wi < 4; ++wi) {
+            const std::uint32_t word = chunk[wi];
+            const sycl::vec<T, 8> xv =
+                *reinterpret_cast<const sycl::vec<T, 8>*>(xc + wi * 8);
+            float a0 = 0.0f, a1 = 0.0f;
+#pragma unroll
+            for (int p = 0; p < 4; ++p) {  // pair p decodes nibbles p and p+4
+              const sycl::vec<float, 2> v = e2m1_dec2(word >> (4 * p));
+              a0 += v[0] * static_cast<float>(xv[p]);
+              a1 += v[1] * static_cast<float>(xv[p + 4]);
+            }
+            aw[wi] = a0 + a1;
           }
-          acc += (a0 + a1) * s;
+          acc += (aw[0] + aw[1]) * s0 + (aw[2] + aw[3]) * s1;
         }
         const float sum = sycl::reduce_over_group(sg, acc, sycl::plus<float>());
         if (lane == 0) y[n] = static_cast<T>(sum);
