@@ -51,29 +51,30 @@ inline float nvfp4_row_dot(
     const XT* x,
     std::size_t K) {
   const std::size_t nchunks = K / 32;  // 16-byte chunk = 32 fp4 = two 16-blocks
+  const std::size_t nwords = nchunks * 4;  // one uint32 word = 8 fp4
   const WVec* wv = reinterpret_cast<const WVec*>(w_row);
   const int lane = static_cast<int>(sg.get_local_linear_id());
   float acc = 0.0f;
-  for (std::size_t c = lane; c < nchunks; c += kSG) {
-    const WVec chunk = wv[c];
-    const float s0 = e4m3_dec_raw(s_row[2 * c]) * gscale;
-    const float s1 = e4m3_dec_raw(s_row[2 * c + 1]) * gscale;
-    const XT* xc = x + c * 32;
-    float aw[4];
+  // Stride over uint32 words (8 fp4 each) rather than 32-fp4 chunks so all 32
+  // lanes stay active for any K >= 256 (down-proj K=256 -> 32 words -> full
+  // lanes; up-proj K=2048 -> 8 words/lane). The chunk-strided loop (nchunks =
+  // K/32) left lanes 8..31 idle for the K=256 down-projection. Bit-identical
+  // per word; only the cross-lane reduction order differs.
+  for (std::size_t widx = lane; widx < nwords; widx += kSG) {
+    const std::size_t c = widx >> 2;            // chunk index (32 fp4)
+    const int wi = static_cast<int>(widx & 3);  // word within chunk
+    const std::uint32_t word = wv[c][wi];
+    // Two 16-element scale blocks per chunk: words 0,1 -> s0, words 2,3 -> s1.
+    const float s = e4m3_dec_raw(s_row[2 * c + (wi >> 1)]) * gscale;
+    const XT* xw = x + c * 32 + wi * 8;
+    float a0 = 0.0f, a1 = 0.0f;
 #pragma unroll
-    for (int wi = 0; wi < 4; ++wi) {
-      const std::uint32_t word = chunk[wi];
-      const XT* xw = xc + wi * 8;
-      float a0 = 0.0f, a1 = 0.0f;
-#pragma unroll
-      for (int p = 0; p < 4; ++p) {
-        const sycl::vec<float, 2> v = e2m1_dec2(word >> (4 * p));
-        a0 += v[0] * static_cast<float>(xw[p]);
-        a1 += v[1] * static_cast<float>(xw[p + 4]);
-      }
-      aw[wi] = a0 + a1;
+    for (int p = 0; p < 4; ++p) {
+      const sycl::vec<float, 2> v = e2m1_dec2(word >> (4 * p));
+      a0 += v[0] * static_cast<float>(xw[p]);
+      a1 += v[1] * static_cast<float>(xw[p + 4]);
     }
-    acc += (aw[0] + aw[1]) * s0 + (aw[2] + aw[3]) * s1;
+    acc += (a0 + a1) * s;
   }
   return sycl::reduce_over_group(sg, acc, sycl::plus<float>());
 }
